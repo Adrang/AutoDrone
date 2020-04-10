@@ -3,11 +3,36 @@
 @description
 """
 import argparse
+from enum import Enum
+
+
+class TurnDirection(Enum):
+    LEFT = 0
+    RIGHT = 0
+
+
+class MoveDirection(Enum):
+    FORWARD = 0
+    BACK = 0
+    LEFT = 0
+    RIGHT = 0
+    UP = 0
+    DOWN = 0
 
 
 class Drone:
 
-    def __init__(self):
+    def __init__(self, name):
+        self.name = name
+        return
+
+    def connect(self):
+        return
+
+    def disconnect(self):
+        return
+
+    def move(self, amount: float, direction: MoveDirection):
         return
 
 
