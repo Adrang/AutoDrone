@@ -5,7 +5,7 @@
 import argparse
 
 
-class ControlGui:
+class SignalImageDataset:
 
     def __init__(self):
         return

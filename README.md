@@ -11,6 +11,10 @@ This project was originally undertaken to fulfill the requirements for a graduat
 ### In Theory
 ### In Practice
 ## Software Guide
+
+### ControlCli
+### ControlGui
+
 ## Future Work
 
 ## Expected operation

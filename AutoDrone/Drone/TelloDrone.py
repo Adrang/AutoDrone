@@ -5,9 +5,21 @@
 import argparse
 import socket
 import threading
+from enum import Enum, auto
 from time import sleep
 
-from AutoDrone.Drone.Drone import Drone
+from AutoDrone.Drone.Drone import Drone, MoveDirection, RotateDirection
+
+
+class FlipDirection(Enum):
+    LEFT = 'l'
+    RIGHT = 'r'
+    FORWARD = 'f'
+    BACK = 'b'
+    LEFT_FORWARD = 'lf'
+    LEFT_BACK = 'lb'
+    RIGHT_FORWARD = 'rf'
+    RIGHT_BACK = 'rb'
 
 
 class TelloConnection:
@@ -129,6 +141,80 @@ class TelloDrone(Drone):
             conn_entry.close()
         return
 
+    def takeoff(self):
+        return
+
+    def land(self):
+        return
+
+    def flip(self, direction: FlipDirection):
+        """
+        The SDK accepts 'l', 'r', 'f', 'b', 'lf', 'lb', 'rf' or 'rb'.
+        Responses are 'OK' or 'FALSE'.
+
+        :param direction:
+        :return:
+        """
+        return
+
+    def move(self, distance: float, direction: MoveDirection):
+        """
+        The unit of distance is centimeters. The SDK accepts distances of 1 to 500 centimeters.
+        This translates to 0.1 to 5 meters, or 0.7 to 16.4 feet.
+
+        :param distance:
+        :param direction:
+        :return:
+        """
+        return
+
+    def set_speed(self, amount: int, direction: MoveDirection):
+        """
+        The unit of speed is cm/s. The SDK accepts speeds from 1 to 100 centimeters/second.
+        This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
+        Responses are 'OK' or 'FALSE'.
+
+        :param amount:
+        :param direction:
+        :return:
+        """
+        return
+
+    def rotate(self, degrees: float, direction: RotateDirection):
+        """
+        The SDK accepts values from 1 to 360.
+        Responses are 'OK' or 'FALSE'.
+
+        :param degrees:
+        :param direction:
+        :return:
+        """
+        return
+
+    def get_speed(self):
+        """
+        Get current speed in KPH
+
+        :return:
+        """
+        return
+
+    def get_battery(self):
+        """
+        Get percent battery life remaining
+
+        :return:
+        """
+        return
+
+    def get_flight_time(self):
+        """
+        Get elapsed flight time in seconds
+
+        :return:
+        """
+        return
+
 
 def main(main_args):
     """
@@ -142,33 +228,6 @@ def main(main_args):
 
     print(tello_drone)
     sleep(5)
-
-    # print('Tello Python3 Demo.')
-    # print(
-    #     '\ttakeoff\n'
-    #     '\tland\n'
-    #     '\tflip\n'
-    #     '\tforward\n'
-    #     '\tback\n'
-    #     '\tleft\n'
-    #     '\tright\n'
-    #     '\t--------\n'
-    #     '\tup\n'
-    #     '\tdown\n'
-    #     '\tcw\n'
-    #     '\tccw\n'
-    #     '\tspeed\n'
-    #     '\tspeed?'
-    # )
-    # print('end -- quit demo.')
-    #
-    # msg = input()
-    # while 'end' not in msg:
-    #     msg = input()
-    #     try:
-    #         tello_drone.send(msg)
-    #     except KeyboardInterrupt:
-    #         break
     tello_drone.disconnect()
     return
 
