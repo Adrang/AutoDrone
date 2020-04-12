@@ -26,3 +26,7 @@ When the GUI or CLI utilities are run, they will send 'command' to the drone. Th
 ### Command descriptions
 
 #### 
+
+## License
+
+See the [LICENSE file](LICENSE) for license rights and limitations (MIT).
