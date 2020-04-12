@@ -1,7 +1,7 @@
 AutoDrone
 ===========================
 
-This project is licensed under the terms of the MIT license and was originally undertaken to fulfill the requirements for a graduate level independent study towards the completion of the Master's of Computer Science at Rochester Institute of Technology.
+This project was originally undertaken to fulfill the requirements for a graduate level independent study towards the completion of the Master's of Computer Science at Rochester Institute of Technology.
 
 - [AutoDrone Proposal](docs/AutoDrone_proposal.pdf)
 - [AutoDrone Writeup](docs/AutoDrone_writeup.pdf)
