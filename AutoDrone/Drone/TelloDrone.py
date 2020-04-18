@@ -11,7 +11,6 @@ https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_
 import argparse
 import socket
 import time
-from queue import Queue
 from time import sleep
 
 from AutoDrone.Drone.Drone import Drone, MoveDirection, RotateDirection
@@ -33,6 +32,7 @@ class TelloDrone(Drone):
         """
         todo keep track of receive timings
         todo make observer from Andrutil
+        todo use a send queue to enforce message order/spacing
 
         :param send_delay:
         :param timeout:
@@ -59,13 +59,10 @@ class TelloDrone(Drone):
                       'listen_thread': None,
                       'listening': None},
         }
-        self.drone_connected = False
-
-        self.send_queue = Queue()
         return
 
     def __str__(self):
-        return f'Name: {self.name} | Connected: {self.drone_connected}'
+        return f'Name: {self.name} | State: {self.state()}'
 
     def connect(self, scan_delay: float = 1):
         """
@@ -102,23 +99,12 @@ class TelloDrone(Drone):
             connection_address = connection_info['address']
             connection_socket.bind(connection_address)
 
-            # listen_thread = threading.Thread(target=self.__udp_receive, args=(connection_socket,), daemon=True)
-            # # noinspection PyTypeChecker
-            # connection_info['listen_thread'] = listen_thread
-            # listen_thread.start()
-            # # noinspection PyTypeChecker
-            # connection_info['listening'] = True
-
-        self.drone_connected = True
         print(f'Network connections established with drone: {self.name}')
         ################################################################
         print(f'Initializing SDK mode of drone: {self.name}')
 
-        start_time = time.time()
         self.send_command(command='command')
-        end_time = time.time()
-        print(f'{end_time - start_time}')
-
+        print(f'SDK mode enabled: {self.name}')
         return
 
     def disconnect(self):
@@ -126,39 +112,18 @@ class TelloDrone(Drone):
 
         :return:
         """
-        self.drone_connected = False
+        if self.state == 'flying':
+            pass
 
-        for conn_type, conn_entry in self.socket_dict.items():
-            conn_entry.close()
+        self.send_command('land')
+
+        for connection_name, connection_info in self.socket_dict.items():
+            connection_socket = connection_info['socket']
+            connection_socket.close()
         return
 
-    def listen(self):
-        """
-
-        :return:
-        """
-        # for connection_name, connection_info in self.receive_dict.items():
-        #     connection_socket = connection_info['socket']
-        #
-        #     listen_thread = threading.Thread(target=self.__udp_receive, args=(connection_socket,), daemon=True)
-        #     # noinspection PyTypeChecker
-        #     connection_info['listen_thread'] = listen_thread
-        #     listen_thread.start()
-        #     # noinspection PyTypeChecker
-        #     connection_info['listening'] = True
+    def state(self):
         return
-
-    # def __udp_receive(self, receive_socket):
-    #     count = 0
-    #     while True:
-    #         try:
-    #             response = receive_socket.recvfrom(1518)
-    #             print(response)
-    #             self.receive_queue.put(response)
-    #         except Exception as e:
-    #             print(f'\n{e} . . .\n')
-    #             break
-    #     return
 
     def send_command(self, command: str):
         """
@@ -173,15 +138,22 @@ class TelloDrone(Drone):
 
         msg = command.encode(encoding='utf-8')
         print(f'Sending message: {msg}')
-        self.send_history.append(msg)
+        start_time = time.time()
         sent = base_socket.sendto(msg, self.send_address)
+        end_time = time.time()
+        send_time = end_time - start_time
 
+        start_time = time.time()
         response = base_socket.recvfrom(1518)
-        print(f'{command}: {response}')
+        end_time = time.time()
+        receive_time = end_time - start_time
+
+        self.message_history.append({
+            'sent': msg, 'response': response, 'send_time': send_time, 'receive_time': receive_time
+        })
 
         if sent == 0:
             raise RuntimeError('socket connection broken')
-        print(f'Sent {sent} bytes')
         return
 
     def move(self, distance: float, direction: MoveDirection):
@@ -195,7 +167,7 @@ class TelloDrone(Drone):
         :return:
         """
         command = f'{direction.value} {int(distance)}'
-        self.send_command(command, self.socket_dict['base'].socket)
+        self.send_command(command)
         return
 
     def rotate(self, degrees: float, direction: RotateDirection):
@@ -208,7 +180,7 @@ class TelloDrone(Drone):
         :return:
         """
         command = f'{direction.value} {int(degrees)}'
-        self.send_command(command, self.socket_dict['base'].socket)
+        self.send_command(command)
         return
 
     def set_speed(self, amount: float):
@@ -222,7 +194,7 @@ class TelloDrone(Drone):
         :return:
         """
         command = f'speed {int(amount)}'
-        self.send_command(command, self.socket_dict['base'].socket)
+        self.send_command(command)
         return
 
     def get_status(self):
@@ -237,9 +209,9 @@ class TelloDrone(Drone):
         time_command = 'time?'
         battery_command = 'battery?'
 
-        self.send_command(speed_command, self.socket_dict['base'].socket)
-        self.send_command(time_command, self.socket_dict['base'].socket)
-        self.send_command(battery_command, self.socket_dict['base'].socket)
+        self.send_command(speed_command)
+        self.send_command(time_command)
+        self.send_command(battery_command)
         return
 
 

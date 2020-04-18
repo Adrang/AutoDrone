@@ -27,8 +27,7 @@ class Drone(ABC):
         self.name = name
         self.timeout = timeout
 
-        self.send_history = []
-        self.receive_history = []
+        self.message_history = []
         return
 
     @abstractmethod
@@ -39,9 +38,9 @@ class Drone(ABC):
     def disconnect(self):
         return
 
-    @abstractmethod
-    def listen(self):
-        return
+    # @abstractmethod
+    # def listen(self):
+    #     return
 
     @abstractmethod
     def send_command(self, message: str):
