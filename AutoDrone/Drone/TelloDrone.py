@@ -1,133 +1,124 @@
 """
 @title
 @description
+
+https://github.com/damiafuentes/DJITelloPy
+https://github.com/microlinux/tello
+
+https://dl-cdn.ryzerobotics.com/downloads/Tello/Tello%20SDK%202.0%20User%20Guide.pdf
+https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_EN.pdf
 """
 import argparse
 import socket
-import threading
-from enum import Enum, auto
+import time
+from queue import Queue
 from time import sleep
 
 from AutoDrone.Drone.Drone import Drone, MoveDirection, RotateDirection
-
-
-class FlipDirection(Enum):
-    LEFT = 'l'
-    RIGHT = 'r'
-    FORWARD = 'f'
-    BACK = 'b'
-    LEFT_FORWARD = 'lf'
-    LEFT_BACK = 'lb'
-    RIGHT_FORWARD = 'rf'
-    RIGHT_BACK = 'rb'
-
-
-class TelloConnection:
-    BUFF_SIZE = 1024
-
-    def __init__(self, name, address):
-        """
-        todo make implement observer from Andrutil
-
-        :param name:
-        :param address:
-        """
-        self.listening = False
-        self.name = name
-        self.address = address
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.settimeout(0)
-        self.listen_thread = threading.Thread(
-            target=self.start_listening,
-            args=(),
-            daemon=True
-        )
-        return
-
-    def start_listening(self):
-        print(f'Starting {self.name} thread...')
-        self.listening = True
-
-        while self.listening:
-            try:
-                data, server = self.socket.recvfrom(self.BUFF_SIZE)
-                print(data.decode(encoding='utf-8'))
-            except BlockingIOError:
-                # no data has been received from connection
-                pass
-
-        print(f'Exiting {self.name} thread...')
-        return
-
-    def close(self):
-        self.listening = False
-
-        # wait for thread to exit
-        sleep(0.2)
-        self.socket.close()
-        return
+from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
 
 
 class TelloDrone(Drone):
-    LOCAL_HOST = '0.0.0.0'
+    BASE_SSID = 'TELLO-'
+
+    LOCAL_HOST = ''
+    BASE_PORT = 9000
     STATE_PORT = 8890
-    BASE_PORT = 8889
     VIDEO_PORT = 11111
 
     TELLO_IP = '192.168.10.1'
     TELLO_PORT = 8889
 
-    def __init__(self):
-        Drone.__init__(self, 'Tello')
+    def __init__(self, send_delay: float = 0.1, timeout: float = 1.0):
+        """
+        todo keep track of receive timings
+        todo make observer from Andrutil
 
-        self.tello_address = (self.TELLO_IP, self.TELLO_PORT)
-        self.connection_dict = {
-            'state': TelloConnection(name='state', address=(self.LOCAL_HOST, self.STATE_PORT)),
-            'base': TelloConnection(name='base', address=(self.LOCAL_HOST, self.BASE_PORT)),
-            'video': TelloConnection(name='video', address=(self.LOCAL_HOST, self.VIDEO_PORT)),
+        :param send_delay:
+        :param timeout:
+        """
+        Drone.__init__(self, 'Tello', timeout)
+
+        self.send_delay = send_delay
+
+        self.drone_ssid = None
+        self.network_connected = False
+
+        self.send_address = (self.TELLO_IP, self.TELLO_PORT)
+        self.socket_dict = {
+            'base': {'address': (self.LOCAL_HOST, self.BASE_PORT),
+                     'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                     'listen_thread': None,
+                     'listening': None},
+            'video': {'address': (self.LOCAL_HOST, self.VIDEO_PORT),
+                      'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                      'listen_thread': None,
+                      'listening': None},
+            'state': {'address': (self.LOCAL_HOST, self.STATE_PORT),
+                      'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                      'listen_thread': None,
+                      'listening': None},
         }
-        self.listening = False
-        self.connected = False
+        self.drone_connected = False
+
+        self.send_queue = Queue()
         return
 
     def __str__(self):
-        return f'Name: {self.name} | Connected: {self.connected} | Listening: {self.listening}'
+        return f'Name: {self.name} | Connected: {self.drone_connected}'
 
-    def connect(self):
+    def connect(self, scan_delay: float = 1):
         """
+        Assumes only one drone network - if multiple, uses first one listed
 
         :return:
         """
-        self.connected = True
+        print(f'Attempting to establish connection to wifi network: {self.name}')
 
-        for conn_type, conn_entry in self.connection_dict.items():
-            self.send('command', conn_entry.socket)
-        return
+        while not self.drone_ssid:
+            netsh_toggle_adapter(adapter_name='Wi-Fi')
 
-    def listen(self):
-        """
+            ssid_list = netsh_find_ssid_list(mode='bssid')
+            for each_ssid in ssid_list:
+                if each_ssid.startswith(self.BASE_SSID):
+                    self.drone_ssid = each_ssid
+                    break
+            else:
+                sleep(scan_delay)
 
-        :return:
-        """
-        self.listening = True
+        print(f'Drone network discovered: {self.drone_ssid}')
 
-        for conn_type, conn_entry in self.connection_dict.items():
-            conn_entry.listen_thread.start()
-        return
+        while not self.network_connected:
+            connection_results, connection_success = netsh_connect_network(network_name=self.drone_ssid)
+            if connection_success:
+                self.network_connected = True
 
-    def send(self, message: str, send_socket=None):
-        """
+        print(f'Connection to drone network established: {self.name}')
+        ################################################################
+        print(f'Attempting to establish connection to drone: {self.name}')
 
-        :param message:
-        :param send_socket:
-        :return:
-        """
-        if self.connected:
-            msg = message.encode(encoding='utf-8')
-            sent = send_socket.sendto(msg, self.tello_address)
-            if sent == 0:
-                raise RuntimeError('socket connection broken')
-            print(f'Sent {sent} bytes')
+        for connection_name, connection_info in self.socket_dict.items():
+            connection_socket = connection_info['socket']
+            connection_address = connection_info['address']
+            connection_socket.bind(connection_address)
+
+            # listen_thread = threading.Thread(target=self.__udp_receive, args=(connection_socket,), daemon=True)
+            # # noinspection PyTypeChecker
+            # connection_info['listen_thread'] = listen_thread
+            # listen_thread.start()
+            # # noinspection PyTypeChecker
+            # connection_info['listening'] = True
+
+        self.drone_connected = True
+        print(f'Network connections established with drone: {self.name}')
+        ################################################################
+        print(f'Initializing SDK mode of drone: {self.name}')
+
+        start_time = time.time()
+        self.send_command(command='command')
+        end_time = time.time()
+        print(f'{end_time - start_time}')
+
         return
 
     def disconnect(self):
@@ -135,49 +126,76 @@ class TelloDrone(Drone):
 
         :return:
         """
-        self.connected = False
+        self.drone_connected = False
 
-        for conn_type, conn_entry in self.connection_dict.items():
+        for conn_type, conn_entry in self.socket_dict.items():
             conn_entry.close()
         return
 
-    def takeoff(self):
-        return
-
-    def land(self):
-        return
-
-    def flip(self, direction: FlipDirection):
+    def listen(self):
         """
-        The SDK accepts 'l', 'r', 'f', 'b', 'lf', 'lb', 'rf' or 'rb'.
-        Responses are 'OK' or 'FALSE'.
 
-        :param direction:
         :return:
         """
+        # for connection_name, connection_info in self.receive_dict.items():
+        #     connection_socket = connection_info['socket']
+        #
+        #     listen_thread = threading.Thread(target=self.__udp_receive, args=(connection_socket,), daemon=True)
+        #     # noinspection PyTypeChecker
+        #     connection_info['listen_thread'] = listen_thread
+        #     listen_thread.start()
+        #     # noinspection PyTypeChecker
+        #     connection_info['listening'] = True
+        return
+
+    # def __udp_receive(self, receive_socket):
+    #     count = 0
+    #     while True:
+    #         try:
+    #             response = receive_socket.recvfrom(1518)
+    #             print(response)
+    #             self.receive_queue.put(response)
+    #         except Exception as e:
+    #             print(f'\n{e} . . .\n')
+    #             break
+    #     return
+
+    def send_command(self, command: str):
+        """
+
+        :param command:
+        :return:
+        """
+        # adding a slight delay before sending the message seems to make the tello drone happy
+        sleep(self.send_delay)
+        base_connection = self.socket_dict['base']
+        base_socket = base_connection['socket']
+
+        msg = command.encode(encoding='utf-8')
+        print(f'Sending message: {msg}')
+        self.send_history.append(msg)
+        sent = base_socket.sendto(msg, self.send_address)
+
+        response = base_socket.recvfrom(1518)
+        print(f'{command}: {response}')
+
+        if sent == 0:
+            raise RuntimeError('socket connection broken')
+        print(f'Sent {sent} bytes')
         return
 
     def move(self, distance: float, direction: MoveDirection):
         """
-        The unit of distance is centimeters. The SDK accepts distances of 1 to 500 centimeters.
+        The unit of distance is centimeters.
+        The SDK accepts distances of 1 to 500 centimeters.
         This translates to 0.1 to 5 meters, or 0.7 to 16.4 feet.
 
         :param distance:
         :param direction:
         :return:
         """
-        return
-
-    def set_speed(self, amount: int, direction: MoveDirection):
-        """
-        The unit of speed is cm/s. The SDK accepts speeds from 1 to 100 centimeters/second.
-        This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
-        Responses are 'OK' or 'FALSE'.
-
-        :param amount:
-        :param direction:
-        :return:
-        """
+        command = f'{direction.value} {int(distance)}'
+        self.send_command(command, self.socket_dict['base'].socket)
         return
 
     def rotate(self, degrees: float, direction: RotateDirection):
@@ -189,30 +207,39 @@ class TelloDrone(Drone):
         :param direction:
         :return:
         """
+        command = f'{direction.value} {int(degrees)}'
+        self.send_command(command, self.socket_dict['base'].socket)
         return
 
-    def get_speed(self):
+    def set_speed(self, amount: float):
+        """
+        The unit of speed is cm/s.
+        The SDK accepts speeds from 1 to 100 centimeters/second.
+        This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
+        Responses are 'OK' or 'FALSE'.
+
+        :param amount:
+        :return:
+        """
+        command = f'speed {int(amount)}'
+        self.send_command(command, self.socket_dict['base'].socket)
+        return
+
+    def get_status(self):
         """
         Get current speed in KPH
-
-        :return:
-        """
-        return
-
-    def get_battery(self):
-        """
         Get percent battery life remaining
-
-        :return:
-        """
-        return
-
-    def get_flight_time(self):
-        """
         Get elapsed flight time in seconds
 
         :return:
         """
+        speed_command = 'speed?'
+        time_command = 'time?'
+        battery_command = 'battery?'
+
+        self.send_command(speed_command, self.socket_dict['base'].socket)
+        self.send_command(time_command, self.socket_dict['base'].socket)
+        self.send_command(battery_command, self.socket_dict['base'].socket)
         return
 
 
@@ -222,18 +249,35 @@ def main(main_args):
     :param main_args:
     :return:
     """
-    tello_drone = TelloDrone()
-    tello_drone.connect()
-    tello_drone.listen()
+    send_delay = main_args.get('send_delay', 1)
+    tout = main_args.get('timeout', 20)
+    scan_delay = main_args.get('scan_delay', 1)
+    ###################################
+    tello_drone = TelloDrone(send_delay=send_delay, timeout=tout)
+    tello_drone.connect(scan_delay=scan_delay)
 
-    print(tello_drone)
-    sleep(5)
-    tello_drone.disconnect()
+    start_time = time.time()
+    tello_drone.send_command(command='takeoff')
+    command_time = time.time()
+    print(f'{command_time - start_time}')
+
+    tello_drone.send_command(command='land')
+    land_time = time.time()
+    print(f'{land_time - start_time}')
+    print(f'{land_time - command_time}')
+
+    sleep(10)
     return
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--send_delay', type=float, default=0.5,
+                        help='')
+    parser.add_argument('--timeout', type=float, default=20,
+                        help='')
+    parser.add_argument('--scan_delay', type=float, default=1,
+                        help='')
 
     args = parser.parse_args()
     main(vars(args))

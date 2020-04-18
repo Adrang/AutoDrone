@@ -3,42 +3,63 @@
 @description
 """
 import argparse
-from enum import Enum, auto
+from abc import ABC, abstractmethod
+from enum import Enum
 
 
 class RotateDirection(Enum):
-    CLOCKWISE = auto()
-    COUNTER_CLOCKWISE = auto()
+    CLOCKWISE = 'cw'
+    COUNTER_CLOCKWISE = 'ccw'
 
 
 class MoveDirection(Enum):
-    FORWARD = auto()
-    BACK = auto()
-    LEFT = auto()
-    RIGHT = auto()
-    UP = auto()
-    DOWN = auto()
+    FORWARD = 'forward'
+    BACK = 'back'
+    LEFT = 'left'
+    RIGHT = 'right'
+    UP = 'up'
+    DOWN = 'down'
 
 
-class Drone:
+class Drone(ABC):
 
-    def __init__(self, name):
+    def __init__(self, name: str, timeout: float = 0.5):
         self.name = name
+        self.timeout = timeout
+
+        self.send_history = []
+        self.receive_history = []
         return
 
-    def connect(self):
+    @abstractmethod
+    def connect(self, scan_delay: int = 1):
         return
 
+    @abstractmethod
     def disconnect(self):
         return
 
-    def move(self, distance: int, direction: MoveDirection):
+    @abstractmethod
+    def listen(self):
         return
 
-    def rotate(self, degrees: int, direction: RotateDirection):
+    @abstractmethod
+    def send_command(self, message: str):
         return
 
-    def set_speed(self, amount: int, direction: MoveDirection):
+    @abstractmethod
+    def move(self, distance: float, direction: MoveDirection):
+        return
+
+    @abstractmethod
+    def rotate(self, degrees: float, direction: RotateDirection):
+        return
+
+    @abstractmethod
+    def set_speed(self, amount: float):
+        return
+
+    def get_status(self):
         return
 
 

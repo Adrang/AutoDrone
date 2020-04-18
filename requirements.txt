@@ -1,2 +1,8 @@
+pygame
+opencv-python
+Pillow
+numpy
+matplotlib
+Andrutil
 PySimpleGUI
 ffmpeg
