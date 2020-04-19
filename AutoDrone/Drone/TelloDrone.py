@@ -10,59 +10,173 @@ https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_
 """
 import argparse
 import socket
+import threading
 import time
 from time import sleep
 
-from AutoDrone.Drone.Drone import Drone, MoveDirection, RotateDirection
+import cv2
+
 from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
 
 
-class TelloDrone(Drone):
+# def set_wifi_credentials(self, ssid, password):
+#     """Set the Wi-Fi SSID and password. The Tello will reboot afterwords.
+#     Returns:
+#         bool: True for successful, False for unsuccessful
+#     """
+#     return self.send_control_command('wifi %s %s' % (ssid, password))
+#
+# def connect_to_wifi(self, ssid, password):
+#     """Connects to the Wi-Fi with SSID and password.
+#     Returns:
+#         bool: True for successful, False for unsuccessful
+#     """
+#     return self.send_control_command('ap %s %s' % (ssid, password))
+#
+# def get_wifi(self):
+#     """Get Wi-Fi SNR
+#     Returns:
+#         False: Unsuccessful
+#         str: snr
+#     """
+#     return self.send_read_command('wifi?')
+#
+# def get_sdk_version(self):
+#     """Get SDK Version
+#     Returns:
+#         False: Unsuccessful
+#         str: SDK Version
+#     """
+#     return self.send_read_command('sdk?')
+#
+# def get_serial_number(self):
+#     """Get Serial Number
+#     Returns:
+#         False: Unsuccessful
+#         str: Serial Number
+#     """
+#     return self.send_read_command('sn?')
+#
+# def move(self, distance: float, direction: MoveDirection):
+#     """
+#     The unit of distance is centimeters.
+#     The SDK accepts distances of 1 to 500 centimeters.
+#     This translates to 0.1 to 5 meters, or 0.7 to 16.4 feet.
+#
+#     :param distance:
+#     :param direction:
+#     :return:
+#     """
+#     command = f'{direction.value} {int(distance)}'
+#     self.send_command(command)
+#     return
+#
+# def panic(self):
+#     return
+#
+# def rotate(self, degrees: float, direction: RotateDirection):
+#     """
+#     The SDK accepts values from 1 to 360.
+#     Responses are 'OK' or 'FALSE'.
+#
+#     :param degrees:
+#     :param direction:
+#     :return:
+#     """
+#     command = f'{direction.value} {int(degrees)}'
+#     self.send_command(command)
+#     return
+#
+# def set_speed(self, amount: float):
+#     """
+#     The unit of speed is cm/s.
+#     The SDK accepts speeds from 1 to 100 centimeters/second.
+#     This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
+#     Responses are 'OK' or 'FALSE'.
+#
+#     :param amount:
+#     :return:
+#     """
+#     command = f'speed {int(amount)}'
+#     self.send_command(command)
+#     return
+
+class TelloState:
+
+    def __init__(self):
+        self.state_vars = {
+            'pitch': -1, 'roll': -1, 'yaw': -1,
+            'speed_x': -1, 'speed_y': -1, 'speed_z': -1,
+            'temperature_lowest': -1, 'temperature_highest': -1, 'barometer': -1.0,
+            'distance_tof': -1, 'height': -1,
+            'battery': -1, 'flight_time': -1.0,
+            'acceleration_x': -1.0, 'acceleration_y': -1.0, 'acceleration_z': -1.0,
+        }
+        return
+
+
+class TelloDrone:
     BASE_SSID = 'TELLO-'
 
-    LOCAL_HOST = ''
-    BASE_PORT = 9000
-    STATE_PORT = 8890
-    VIDEO_PORT = 11111
+    # Send and receive commands socket
+    CLIENT_HOST = '192.168.10.1'
+    CLIENT_PORT = 8889
 
-    TELLO_IP = '192.168.10.1'
-    TELLO_PORT = 8889
+    # stream constants
+    VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
+    ANY_HOST = '0.0.0.0'
+    STATE_PORT = 8890
+    MIN_FRAME_COUNT = 5
+    STATE_DELAY = 0.1
+    MIN_STATE_COUNT = 2
+
+    BUFFER_SIZE = 1024
 
     def __init__(self, send_delay: float = 0.1, timeout: float = 1.0):
         """
-        todo keep track of receive timings
-        todo make observer from Andrutil
-        todo use a send queue to enforce message order/spacing
+        todo    add logging
+        todo    build state baseline from first n values
+        todo    fix issue
+                    ...
+                    [h264 @ 00000269a35be080] non-existing PPS 0 referenced
+                    [h264 @ 00000269a35be080] decode_slice_header error
+                    [h264 @ 00000269a35be080] no frame!
+                    ...
+        todo    break send/receive logic
+        todo    make observer from Andrutil
+        todo    use a send queue to enforce message order/spacing
+        todo    rl agent to handle send rate - minimize time to react after sending command
+        todo    add check before sending land to make sure the drone is established
+                seems to react better if the drone is stable before sending next command
 
         :param send_delay:
         :param timeout:
         """
-        Drone.__init__(self, 'Tello', timeout)
-
+        self.name = 'Tello'
+        self.message_history = []
         self.send_delay = send_delay
 
         self.drone_ssid = None
         self.network_connected = False
 
-        self.send_address = (self.TELLO_IP, self.TELLO_PORT)
-        self.socket_dict = {
-            'base': {'address': (self.LOCAL_HOST, self.BASE_PORT),
-                     'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                     'listen_thread': None,
-                     'listening': None},
-            'video': {'address': (self.LOCAL_HOST, self.VIDEO_PORT),
-                      'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                      'listen_thread': None,
-                      'listening': None},
-            'state': {'address': (self.LOCAL_HOST, self.STATE_PORT),
-                      'socket': socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                      'listen_thread': None,
-                      'listening': None},
-        }
-        return
+        # To send comments
+        self.tello_address = (self.CLIENT_HOST, self.CLIENT_PORT)
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.client_socket.bind((self.ANY_HOST, self.CLIENT_PORT))
 
-    def __str__(self):
-        return f'Name: {self.name} | State: {self.state()}'
+        # receive state messages
+        self.state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state_socket.bind((self.ANY_HOST, self.STATE_PORT))
+
+        # state information
+        self.state_running = False
+        self.state_history = []
+        self.state_baseline = {}
+
+        # drone streams
+        self.video_capture = None
+        self.frame_history = []
+        return
 
     def connect(self, scan_delay: float = 1):
         """
@@ -70,8 +184,7 @@ class TelloDrone(Drone):
 
         :return:
         """
-        print(f'Attempting to establish connection to wifi network: {self.name}')
-
+        print(f'Attempting to discover drone SSID: {self.name}')
         while not self.drone_ssid:
             netsh_toggle_adapter(adapter_name='Wi-Fi')
 
@@ -82,137 +195,113 @@ class TelloDrone(Drone):
                     break
             else:
                 sleep(scan_delay)
-
         print(f'Drone network discovered: {self.drone_ssid}')
-
+        ################################################################
+        print(f'Attempting to establish connection to wifi network: {self.drone_ssid}')
         while not self.network_connected:
             connection_results, connection_success = netsh_connect_network(network_name=self.drone_ssid)
             if connection_success:
                 self.network_connected = True
-
-        print(f'Connection to drone network established: {self.name}')
-        ################################################################
-        print(f'Attempting to establish connection to drone: {self.name}')
-
-        for connection_name, connection_info in self.socket_dict.items():
-            connection_socket = connection_info['socket']
-            connection_address = connection_info['address']
-            connection_socket.bind(connection_address)
-
-        print(f'Network connections established with drone: {self.name}')
+        print(f'Connection to drone network established: {self.drone_ssid}')
         ################################################################
         print(f'Initializing SDK mode of drone: {self.name}')
-
-        self.send_command(command='command')
+        message_response = self.__send_command('command')
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Unable to connect to drone')
         print(f'SDK mode enabled: {self.name}')
+        ################################################################
+        print(f'Starting state thread from drone: {self.name}')
+        video_thread = threading.Thread(target=self.state_stream, args=(), daemon=True)
+        video_thread.start()
+        while len(self.state_history) < self.MIN_STATE_COUNT:
+            sleep(0.1)
+        print(f'State stream established: {self.name}')
+        ################################################################
+        print(f'Starting video thread from drone: {self.name}')
+        video_thread = threading.Thread(target=self.video_stream, args=(), daemon=True)
+        video_thread.start()
+        while len(self.frame_history) < self.MIN_FRAME_COUNT:
+            sleep(0.1)
+        print(f'Video stream established: {self.name}')
         return
 
-    def disconnect(self):
-        """
-
-        :return:
-        """
-        if self.state == 'flying':
-            pass
-
-        self.send_command('land')
-
-        for connection_name, connection_info in self.socket_dict.items():
-            connection_socket = connection_info['socket']
-            connection_socket.close()
+    def state_stream(self):
+        self.state_running = True
+        while self.state_running:
+            try:
+                state_bytes, _ = self.state_socket.recvfrom(self.BUFFER_SIZE)
+                state_str = state_bytes.decode('utf-8').strip()
+                state_val_list = state_str.split(';')
+                state_dict = {
+                    state_entry.split(':')[0]: state_entry.split(':')[1]
+                    for state_entry in state_val_list
+                    if len(state_entry) > 0
+                }
+                # todo add lock
+                self.state_history.append(state_dict)
+            except Exception as e:
+                print(f'{e}')
+            sleep(self.STATE_DELAY)
         return
 
-    def state(self):
+    def video_stream(self):
+        message_response = self.__send_command('streamon')
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Could not start video stream')
+
+        self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL)
+        while self.video_capture.isOpened():
+            read_success, video_frame = self.video_capture.read()
+            if read_success:
+                self.frame_history.append(video_frame)
+                cv2.imshow('frame', video_frame)
+        self.video_capture.release()
+        cv2.destroyAllWindows()
+
+        message_response = self.__send_command('streamoff')
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Could not start video stream')
         return
 
-    def send_command(self, command: str):
+    def __send_command(self, command: str):
         """
 
         :param command:
         :return:
         """
-        # adding a slight delay before sending the message seems to make the tello drone happy
-        sleep(self.send_delay)
-        base_connection = self.socket_dict['base']
-        base_socket = base_connection['socket']
+        try:
+            # adding a slight delay before sending the message seems to make the tello drone happy
+            sleep(self.send_delay)
 
-        msg = command.encode(encoding='utf-8')
-        print(f'Sending message: {msg}')
-        start_time = time.time()
-        sent = base_socket.sendto(msg, self.send_address)
-        end_time = time.time()
-        send_time = end_time - start_time
+            msg = command.encode(encoding='utf-8')
+            start_time = time.time()
+            self.client_socket.sendto(msg, self.tello_address)
+            end_time = time.time()
+            send_time = end_time - start_time
 
-        start_time = time.time()
-        response = base_socket.recvfrom(1518)
-        end_time = time.time()
-        receive_time = end_time - start_time
+            start_time = time.time()
+            response_bytes, _ = self.client_socket.recvfrom(self.BUFFER_SIZE)
+            end_time = time.time()
+            receive_time = end_time - start_time
+            response_str = response_bytes.decode('utf-8')
 
-        self.message_history.append({
-            'sent': msg, 'response': response, 'send_time': send_time, 'receive_time': receive_time
-        })
+            self.message_history.append({
+                'sent': msg, 'response': response_str, 'send_time': send_time, 'receive_time': receive_time
+            })
+        except UnicodeDecodeError as ude:
+            response_str = 'error'
+        return response_str
 
-        if sent == 0:
-            raise RuntimeError('socket connection broken')
-        return
+    def takeoff(self):
+        message_response = self.__send_command('takeoff')
+        return message_response != 'OK' and message_response != 'ok'
 
-    def move(self, distance: float, direction: MoveDirection):
-        """
-        The unit of distance is centimeters.
-        The SDK accepts distances of 1 to 500 centimeters.
-        This translates to 0.1 to 5 meters, or 0.7 to 16.4 feet.
+    def land(self):
+        message_response = self.__send_command('land')
+        return message_response != 'OK' and message_response != 'ok'
 
-        :param distance:
-        :param direction:
-        :return:
-        """
-        command = f'{direction.value} {int(distance)}'
-        self.send_command(command)
-        return
-
-    def rotate(self, degrees: float, direction: RotateDirection):
-        """
-        The SDK accepts values from 1 to 360.
-        Responses are 'OK' or 'FALSE'.
-
-        :param degrees:
-        :param direction:
-        :return:
-        """
-        command = f'{direction.value} {int(degrees)}'
-        self.send_command(command)
-        return
-
-    def set_speed(self, amount: float):
-        """
-        The unit of speed is cm/s.
-        The SDK accepts speeds from 1 to 100 centimeters/second.
-        This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
-        Responses are 'OK' or 'FALSE'.
-
-        :param amount:
-        :return:
-        """
-        command = f'speed {int(amount)}'
-        self.send_command(command)
-        return
-
-    def get_status(self):
-        """
-        Get current speed in KPH
-        Get percent battery life remaining
-        Get elapsed flight time in seconds
-
-        :return:
-        """
-        speed_command = 'speed?'
-        time_command = 'time?'
-        battery_command = 'battery?'
-
-        self.send_command(speed_command)
-        self.send_command(time_command)
-        self.send_command(battery_command)
-        return
+    def get_state(self):
+        return self.state_history[-1]
 
 
 def main(main_args):
@@ -228,15 +317,25 @@ def main(main_args):
     tello_drone = TelloDrone(send_delay=send_delay, timeout=tout)
     tello_drone.connect(scan_delay=scan_delay)
 
-    start_time = time.time()
-    tello_drone.send_command(command='takeoff')
-    command_time = time.time()
-    print(f'{command_time - start_time}')
+    tello_state = tello_drone.get_state()
+    for state_name, state_val in tello_state.items():
+        print(f'{state_name}:{state_val}')
 
-    tello_drone.send_command(command='land')
-    land_time = time.time()
-    print(f'{land_time - start_time}')
-    print(f'{land_time - command_time}')
+    # start_time = time.time()
+    # tello_drone.takeoff()
+    # command_time = time.time()
+    # print(f'{command_time - start_time}')
+    #
+    tello_state = tello_drone.get_state()
+    for state_name, state_val in tello_state.items():
+        print(f'{state_name}:{state_val}')
+
+    sleep(2)
+
+    # tello_drone.land()
+    # land_time = time.time()
+    # print(f'{land_time - start_time}')
+    # print(f'{land_time - command_time}')
 
     sleep(10)
     return
@@ -244,7 +343,7 @@ def main(main_args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--send_delay', type=float, default=0.5,
+    parser.add_argument('--send_delay', type=float, default=1,
                         help='')
     parser.add_argument('--timeout', type=float, default=20,
                         help='')
