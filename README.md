@@ -12,6 +12,8 @@ This project was originally undertaken to fulfill the requirements for a graduat
 ### In Practice
 ## Software Guide
 
+https://github.com/cisco/openh264/releases
+
 ### ControlCli
 ### ControlGui
 
@@ -19,9 +21,21 @@ This project was originally undertaken to fulfill the requirements for a graduat
 
 ## Expected operation
 
-Upon initially turning on the Tello drone, the indicator led blink green and then flash red for about 1 second. It will then switch off for another second, and then proceed to blink a series of colors. Eventually, it will continually flash yellow. At this point, the drone should be broadcasting its wifi network and you should be able to connect to it from your computer's network settings. [A video of this sequence is located in the `docs` folder.](docs/indicator_led_sequence.mp4)
+
+### Tello LED Sequences
+
+Upon initially turning on the Tello drone, the indicator led will blink green and then flash red for about 1 second. It will then switch off for another second, and then proceed to blink a series of colors. Eventually, it will continually flash yellow. At this point, the drone should be broadcasting its wifi network and you should be able to connect to it from your computer's network settings.
+
+[A video of this sequence is located in the `docs` folder.](docs/indicator_led_sequence.mp4)
 
 When the GUI or CLI utilities are run, they will send 'command' to the drone. This specific string tells the drone to switch to sdk mode, allowing us to use our program to send commands to control the drone. The utilities keep sending this command on a 1 second interval until the receive an 'ok' message, indicating that the drone has successfully received the command. At this point, the utility has established a connection to the drone, and the user is able to interactively send control the Tello drone from the utility's interface.
+
+TODO Describe meaning of different flashing combinations
+
+TODO Disclaimer about these having been inferred
+
+- Broadcasting wifi network
+- Green - SDK mode
 
 ### Command descriptions
 

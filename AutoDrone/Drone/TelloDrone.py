@@ -9,13 +9,18 @@ https://dl-cdn.ryzerobotics.com/downloads/Tello/Tello%20SDK%202.0%20User%20Guide
 https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_EN.pdf
 """
 import argparse
+import json
+import os
 import socket
 import threading
+import time
+from datetime import datetime
 from time import sleep
 
 import cv2
 from Andrutil.Misc import time_function
 
+from AutoDrone import DATA_DIR
 from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
 
 
@@ -116,49 +121,54 @@ class TelloState:
 
 
 class TelloDrone:
+    # Network constants
     BASE_SSID = 'TELLO-'
+    NETWORK_SCAN_DELAY = 0.5
 
     # Send and receive commands socket
     CLIENT_HOST = '192.168.10.1'
     CLIENT_PORT = 8889
+    SEND_DELAY = 0.1
 
+    # receive constants
+    BUFFER_SIZE = 1024
     ANY_HOST = '0.0.0.0'
-    # stream constants
+
+    # state stream constants
     STATE_PORT = 8890
     STATE_DELAY = 0.1
-    MIN_STATE_COUNT = 2
 
+    # video stream constants
     VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
     FRAME_DELAY = 1
-    MIN_FRAME_COUNT = 5
 
-    BUFFER_SIZE = 1024
-
-    def __init__(self, send_delay: float = 0.1):
+    def __init__(self):
         """
-        todo    add logging
-        todo    build state baseline from first n values
         todo    fix issue
                     ...
                     [h264 @ 00000269a35be080] non-existing PPS 0 referenced
                     [h264 @ 00000269a35be080] decode_slice_header error
                     [h264 @ 00000269a35be080] no frame!
                     ...
-        todo    break send/receive logic
         todo    make observer from Andrutil
-        todo    use a send queue to enforce message order/spacing
         todo    rl agent to handle send rate - minimize time to react after sending command
         todo    add check before sending land to make sure the drone is established
                 seems to react better if the drone is stable before sending next command
-
-        :param send_delay:
         """
-        self.name = 'Tello'
-        self.message_history = []
-        self.send_delay = send_delay
+        current_time = time.time()
+        date_time = datetime.fromtimestamp(time.time())
+        time_str = date_time.strftime("%Y-%m-%d-%H-%M-%S")
 
+        self.name = 'Tello'
+        self.id = f'{self.name}_{time_str}_{int(current_time)}'
+        self.save_directory = os.path.join(DATA_DIR, 'tello', f'{self.id}')
+        if not os.path.isdir(self.save_directory):
+            os.makedirs(self.save_directory)
+
+        # wifi network info
         self.drone_ssid = None
         self.network_connected = False
+        self.metadata_fname = os.path.join(self.save_directory, f'metadata_{self.id}.json')
 
         # To send comments
         self.tello_address = (self.CLIENT_HOST, self.CLIENT_PORT)
@@ -169,17 +179,69 @@ class TelloDrone:
         self.state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.state_socket.bind((self.ANY_HOST, self.STATE_PORT))
 
+        # send and receive message logging
+        self.message_history = []
+        self.message_history_fname = os.path.join(self.save_directory, f'messages_{self.id}.json')
+
         # state information
-        self.state_running = False
+        self.state_stream_running = False
         self.state_history = []
         self.state_baseline = {}
+        self.state_history_fname = os.path.join(self.save_directory, f'states_{self.id}.json')
 
-        # drone streams
-        self.video_capture = None
+        # video stream
         self.frame_history = []
+        self.video_capture = None
+        self.video_writer = None
+        self.video_fname = os.path.join(self.save_directory, f'{self.id}.avi')
         return
 
-    def connect(self, scan_delay: float = 1):
+    def connect(self):
+        """
+
+        :return:
+        """
+        self.connect_wifi()
+        ################################################################
+        self.connect_drone()
+        ################################################################
+        self.start_state_thread()
+        self.start_video_thread()
+        return
+
+    def cleanup(self):
+        self.set_video_stream_off()
+        self.state_stream_running = False
+
+        # slight delay to make sure all threads end properly
+        sleep(1)
+
+        # todo    build state baseline from first n values
+        meta_data = {
+            'id': self.id, 'ssid': self.drone_ssid,
+            'num_messages': len(self.message_history),
+            'num_states': len(self.state_history),
+            'num_frames': len(self.frame_history),
+        }
+        with open(self.metadata_fname, 'w+') as save_file:
+            json.dump(fp=save_file, obj=meta_data, indent=2)
+
+        with open(self.message_history_fname, 'w+') as save_file:
+            json.dump(fp=save_file, obj=self.message_history, indent=2)
+
+        with open(self.state_history_fname, 'w+') as save_file:
+            json.dump(fp=save_file, obj=self.state_history, indent=2)
+        return
+
+    def connect_drone(self):
+        print(f'Initializing SDK mode of drone: {self.name}')
+        message_response = self.__send_command('command', wait_for_response=True)
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Unable to connect to drone')
+        print(f'SDK mode enabled: {self.name}')
+        return
+
+    def connect_wifi(self):
         """
         Assumes only one drone network - if multiple, uses first one listed
 
@@ -195,7 +257,7 @@ class TelloDrone:
                     self.drone_ssid = each_ssid
                     break
             else:
-                sleep(scan_delay)
+                sleep(self.NETWORK_SCAN_DELAY)
         print(f'Drone network discovered: {self.drone_ssid}')
         ################################################################
         print(f'Attempting to establish connection to wifi network: {self.drone_ssid}')
@@ -204,33 +266,23 @@ class TelloDrone:
             if connection_success:
                 self.network_connected = True
         print(f'Connection to drone network established: {self.drone_ssid}')
-        ################################################################
-        print(f'Initializing SDK mode of drone: {self.name}')
-        message_response = self.__send_command('command')
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Unable to connect to drone')
-        print(f'SDK mode enabled: {self.name}')
-        ################################################################
+        return
+
+    def start_state_thread(self):
         print(f'Starting state thread from drone: {self.name}')
         video_thread = threading.Thread(target=self.state_stream, args=(), daemon=True)
         video_thread.start()
-        while len(self.state_history) < self.MIN_STATE_COUNT:
+        while not self.state_stream_running:
             sleep(0.1)
         print(f'State stream established: {self.name}')
-        ################################################################
-        print(f'Starting video thread from drone: {self.name}')
-        video_thread = threading.Thread(target=self.video_stream, args=(), daemon=True)
-        video_thread.start()
-        while len(self.frame_history) < self.MIN_FRAME_COUNT:
-            sleep(0.1)
-        print(f'Video stream established: {self.name}')
         return
 
     def state_stream(self):
-        self.state_running = True
-        while self.state_running:
+        self.state_stream_running = True
+        while self.state_stream_running:
             try:
                 state_bytes, _ = self.state_socket.recvfrom(self.BUFFER_SIZE)
+                initial_time = time.time()
                 state_str = state_bytes.decode('utf-8').strip()
                 state_val_list = state_str.split(';')
                 state_dict = {
@@ -239,67 +291,114 @@ class TelloDrone:
                     if len(state_entry) > 0
                 }
                 # todo add lock
+                state_dict['timestamp'] = initial_time
                 self.state_history.append(state_dict)
             except Exception as e:
                 print(f'{e}')
             sleep(self.STATE_DELAY)
         return
 
+    def start_video_thread(self):
+        print(f'Starting video thread from drone: {self.name}')
+        video_thread = threading.Thread(target=self.video_stream, args=(), daemon=True)
+        video_thread.start()
+        while not self.video_stream_running():
+            sleep(0.1)
+        print(f'Video stream established: {self.name}')
+        return
+
     def video_stream(self):
-        message_response = self.__send_command('streamon')
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Could not start video stream')
+        self.set_video_stream_on()
 
         self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL, cv2.CAP_FFMPEG)
         if not self.video_capture.isOpened():
-            self.video_capture.open(self.VIDEO_UDP_URL)
+            raise RuntimeError('Could not open video stream')
 
+        # discard first read and make sure all is reading correctly
+        read_success, video_frame = self.video_capture.read()
+        if not read_success:
+            raise RuntimeError('Error reading from video stream')
+
+        # save capture width and height for later when saving the video
+        fps = 30
+        frame_width = int(self.video_capture.get(3))
+        frame_height = int(self.video_capture.get(4))
+        codec_str = 'MJPG'
+        self.video_writer = cv2.VideoWriter(
+            self.video_fname, cv2.VideoWriter_fourcc(*codec_str),
+            fps, (frame_width, frame_height)
+        )
+
+        window_name = 'Video feed'
+        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
         while self.video_capture.isOpened():
             read_success, video_frame = self.video_capture.read()
             if read_success:
-                cv2.imshow('frame', video_frame)
+                cv2.imshow(window_name, video_frame)
+                self.video_writer.write(video_frame.astype('uint8'))
                 self.frame_history.append(video_frame)
             cv2.waitKey(self.FRAME_DELAY)
         self.video_capture.release()
+        self.video_writer.release()
         cv2.destroyAllWindows()
-
-        message_response = self.__send_command('streamoff')
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Could not start video stream')
+        self.set_video_stream_off()
         return
 
-    def __send_command(self, command: str):
+    def video_stream_running(self):
+        return self.video_capture and self.video_capture.isOpened()
+
+    def __send_command(self, command: str, wait_for_response: bool):
         """
+        todo    use a send queue to enforce message order/spacing
 
         :param command:
+        :param wait_for_response:
         :return:
         """
         try:
             # adding a slight delay before sending the message seems to make the tello drone happy
-            sleep(self.send_delay)
+            sleep(self.SEND_DELAY)
 
+            initial_time = time.time()
             msg = command.encode(encoding='utf-8')
             func_args = (msg, self.tello_address)
             _, send_time = time_function(self.client_socket.sendto, *func_args)
 
-            func_args = (self.BUFFER_SIZE,)
-            (response_bytes, _), receive_time = time_function(self.client_socket.recvfrom, *func_args)
-            response_str = response_bytes.decode('utf-8')
+            response_str = None
+            receive_time = None
+            if wait_for_response:
+                func_args = (self.BUFFER_SIZE,)
+                (response_bytes, _), receive_time = time_function(self.client_socket.recvfrom, *func_args)
+                response_str = response_bytes.decode('utf-8')
 
             self.message_history.append({
-                'sent': msg, 'response': response_str, 'send_time': send_time, 'receive_time': receive_time
+                'timestamp': initial_time,
+                'sent': command, 'send_time': send_time,
+                'response': response_str, 'receive_time': receive_time
             })
         except UnicodeDecodeError:
             response_str = 'error'
         return response_str
 
     def takeoff(self):
-        message_response = self.__send_command('takeoff')
+        message_response = self.__send_command('takeoff', wait_for_response=True)
         return message_response != 'OK' and message_response != 'ok'
 
     def land(self):
-        message_response = self.__send_command('land')
+        message_response = self.__send_command('land', wait_for_response=True)
         return message_response != 'OK' and message_response != 'ok'
+
+    def set_video_stream_off(self):
+        message_response = self.__send_command('streamoff', wait_for_response=True)
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Could not stop video stream')
+        return
+
+    def set_video_stream_on(self):
+        message_response = self.__send_command('streamon', wait_for_response=True)
+        if message_response != 'OK' and message_response != 'ok':
+            raise RuntimeError('Error when starting stream from drone')
+        return
 
     def get_state(self):
         return self.state_history[-1]
@@ -311,33 +410,29 @@ def main(main_args):
     :param main_args:
     :return:
     """
-    send_delay = main_args.get('send_delay', 1)
-    scan_delay = main_args.get('scan_delay', 1)
+    send_delay = main_args.get('send_delay', 0.1)
+    scan_delay = main_args.get('scan_delay', 0.1)
     ###################################
-    tello_drone = TelloDrone(send_delay=send_delay)
-    tello_drone.connect(scan_delay=scan_delay)
-
-    tello_state = tello_drone.get_state()
-    for state_name, state_val in tello_state.items():
-        print(f'{state_name}:{state_val}')
-
+    tello_drone = TelloDrone()
+    tello_drone.NETWORK_SCAN_DELAY = scan_delay
+    tello_drone.SEND_DELAY = send_delay
+    ###################################
+    tello_drone.connect()
+    #
     # start_time = time.time()
     # tello_drone.takeoff()
     # command_time = time.time()
     # print(f'{command_time - start_time}')
     #
-    tello_state = tello_drone.get_state()
-    for state_name, state_val in tello_state.items():
-        print(f'{state_name}:{state_val}')
-
-    sleep(2)
-
+    # sleep(2)
+    #
     # tello_drone.land()
     # land_time = time.time()
     # print(f'{land_time - start_time}')
     # print(f'{land_time - command_time}')
-
-    sleep(10)
+    #
+    sleep(5)
+    tello_drone.cleanup()
     return
 
 
