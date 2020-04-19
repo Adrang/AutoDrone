@@ -11,10 +11,10 @@ https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_
 import argparse
 import socket
 import threading
-import time
 from time import sleep
 
 import cv2
+from Andrutil.Misc import time_function
 
 from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
 
@@ -122,17 +122,19 @@ class TelloDrone:
     CLIENT_HOST = '192.168.10.1'
     CLIENT_PORT = 8889
 
-    # stream constants
-    VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
     ANY_HOST = '0.0.0.0'
+    # stream constants
     STATE_PORT = 8890
-    MIN_FRAME_COUNT = 5
     STATE_DELAY = 0.1
     MIN_STATE_COUNT = 2
 
+    VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
+    FRAME_DELAY = 1
+    MIN_FRAME_COUNT = 5
+
     BUFFER_SIZE = 1024
 
-    def __init__(self, send_delay: float = 0.1, timeout: float = 1.0):
+    def __init__(self, send_delay: float = 0.1):
         """
         todo    add logging
         todo    build state baseline from first n values
@@ -150,7 +152,6 @@ class TelloDrone:
                 seems to react better if the drone is stable before sending next command
 
         :param send_delay:
-        :param timeout:
         """
         self.name = 'Tello'
         self.message_history = []
@@ -249,12 +250,16 @@ class TelloDrone:
         if message_response != 'OK' and message_response != 'ok':
             raise RuntimeError('Could not start video stream')
 
-        self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL)
+        self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL, cv2.CAP_FFMPEG)
+        if not self.video_capture.isOpened():
+            self.video_capture.open(self.VIDEO_UDP_URL)
+
         while self.video_capture.isOpened():
             read_success, video_frame = self.video_capture.read()
             if read_success:
-                self.frame_history.append(video_frame)
                 cv2.imshow('frame', video_frame)
+                self.frame_history.append(video_frame)
+            cv2.waitKey(self.FRAME_DELAY)
         self.video_capture.release()
         cv2.destroyAllWindows()
 
@@ -274,21 +279,17 @@ class TelloDrone:
             sleep(self.send_delay)
 
             msg = command.encode(encoding='utf-8')
-            start_time = time.time()
-            self.client_socket.sendto(msg, self.tello_address)
-            end_time = time.time()
-            send_time = end_time - start_time
+            func_args = (msg, self.tello_address)
+            _, send_time = time_function(self.client_socket.sendto, *func_args)
 
-            start_time = time.time()
-            response_bytes, _ = self.client_socket.recvfrom(self.BUFFER_SIZE)
-            end_time = time.time()
-            receive_time = end_time - start_time
+            func_args = (self.BUFFER_SIZE,)
+            (response_bytes, _), receive_time = time_function(self.client_socket.recvfrom, *func_args)
             response_str = response_bytes.decode('utf-8')
 
             self.message_history.append({
                 'sent': msg, 'response': response_str, 'send_time': send_time, 'receive_time': receive_time
             })
-        except UnicodeDecodeError as ude:
+        except UnicodeDecodeError:
             response_str = 'error'
         return response_str
 
@@ -311,10 +312,9 @@ def main(main_args):
     :return:
     """
     send_delay = main_args.get('send_delay', 1)
-    tout = main_args.get('timeout', 20)
     scan_delay = main_args.get('scan_delay', 1)
     ###################################
-    tello_drone = TelloDrone(send_delay=send_delay, timeout=tout)
+    tello_drone = TelloDrone(send_delay=send_delay)
     tello_drone.connect(scan_delay=scan_delay)
 
     tello_state = tello_drone.get_state()
@@ -344,8 +344,6 @@ def main(main_args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--send_delay', type=float, default=1,
-                        help='')
-    parser.add_argument('--timeout', type=float, default=20,
                         help='')
     parser.add_argument('--scan_delay', type=float, default=1,
                         help='')
