@@ -99,29 +99,29 @@ def netsh_show_interfaces(mode: str = None):
     return result_dict
 
 
-def netsh_connect_network(network_name: str):
-    command = f'netsh wlan connect name={network_name}'
+def netsh_connect_network(network_name: str, interface: str):
+    command = f'netsh wlan connect name="{network_name}" interface="{interface}"'
     results = subprocess.check_output(command)
     cleaned_results = clean_results(results)
     connection_success = set(cleaned_results).intersection({'Connection request was completed successfully.'})
     return cleaned_results, connection_success
 
 
-def netsh_disable_wifi_adapter(adapter_name: str = 'Wi-Fi'):
-    command = f'netsh interface set interface name={adapter_name} admin=disabled'
+def netsh_disable_wifi_adapter(adapter_name: str):
+    command = f'netsh interface set interface name="{adapter_name}" admin=disabled'
     results = subprocess.check_output(command)
     cleaned_results = clean_results(results)
     return cleaned_results
 
 
-def netsh_enable_wifi_adapter(adapter_name: str = 'Wi-Fi'):
-    command = f'netsh interface set interface name={adapter_name} admin=enable'
+def netsh_enable_wifi_adapter(adapter_name):
+    command = f'netsh interface set interface name="{adapter_name}" admin=enable'
     results = subprocess.check_output(command)
     cleaned_results = clean_results(results)
     return cleaned_results
 
 
-def netsh_toggle_adapter(adapter_name: str = 'Wi-Fi'):
+def netsh_toggle_adapter(adapter_name: str):
     netsh_disable_wifi_adapter(adapter_name=adapter_name)
     netsh_enable_wifi_adapter(adapter_name=adapter_name)
     return

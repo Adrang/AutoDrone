@@ -15,112 +15,49 @@ import socket
 import threading
 import time
 from datetime import datetime
+from enum import Enum
 from time import sleep
 
 import cv2
 from Andrutil.Misc import time_function
+from Andrutil.ObserverObservable import Observable
 
-from AutoDrone import DATA_DIR
+from AutoDrone import DATA_DIR, TERMINAL_COLUMNS
 from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
+from AutoDrone.PrintObserver import PrintObserver
 
 
-# def set_wifi_credentials(self, ssid, password):
-#     """Set the Wi-Fi SSID and password. The Tello will reboot afterwords.
-#     Returns:
-#         bool: True for successful, False for unsuccessful
-#     """
-#     return self.send_control_command('wifi %s %s' % (ssid, password))
-#
-# def connect_to_wifi(self, ssid, password):
-#     """Connects to the Wi-Fi with SSID and password.
-#     Returns:
-#         bool: True for successful, False for unsuccessful
-#     """
-#     return self.send_control_command('ap %s %s' % (ssid, password))
-#
-# def get_wifi(self):
-#     """Get Wi-Fi SNR
-#     Returns:
-#         False: Unsuccessful
-#         str: snr
-#     """
-#     return self.send_read_command('wifi?')
-#
-# def get_sdk_version(self):
-#     """Get SDK Version
-#     Returns:
-#         False: Unsuccessful
-#         str: SDK Version
-#     """
-#     return self.send_read_command('sdk?')
-#
-# def get_serial_number(self):
-#     """Get Serial Number
-#     Returns:
-#         False: Unsuccessful
-#         str: Serial Number
-#     """
-#     return self.send_read_command('sn?')
-#
-# def move(self, distance: float, direction: MoveDirection):
-#     """
-#     The unit of distance is centimeters.
-#     The SDK accepts distances of 1 to 500 centimeters.
-#     This translates to 0.1 to 5 meters, or 0.7 to 16.4 feet.
-#
-#     :param distance:
-#     :param direction:
-#     :return:
-#     """
-#     command = f'{direction.value} {int(distance)}'
-#     self.send_command(command)
-#     return
-#
-# def panic(self):
-#     return
-#
-# def rotate(self, degrees: float, direction: RotateDirection):
-#     """
-#     The SDK accepts values from 1 to 360.
-#     Responses are 'OK' or 'FALSE'.
-#
-#     :param degrees:
-#     :param direction:
-#     :return:
-#     """
-#     command = f'{direction.value} {int(degrees)}'
-#     self.send_command(command)
-#     return
-#
-# def set_speed(self, amount: float):
-#     """
-#     The unit of speed is cm/s.
-#     The SDK accepts speeds from 1 to 100 centimeters/second.
-#     This translates to 0.1 to 3.6 KPH, or 0.1 to 2.2 MPH.
-#     Responses are 'OK' or 'FALSE'.
-#
-#     :param amount:
-#     :return:
-#     """
-#     command = f'speed {int(amount)}'
-#     self.send_command(command)
-#     return
+class MoveDirection(Enum):
+    """
 
-class TelloState:
-
-    def __init__(self):
-        self.state_vars = {
-            'pitch': -1, 'roll': -1, 'yaw': -1,
-            'speed_x': -1, 'speed_y': -1, 'speed_z': -1,
-            'temperature_lowest': -1, 'temperature_highest': -1, 'barometer': -1.0,
-            'distance_tof': -1, 'height': -1,
-            'battery': -1, 'flight_time': -1.0,
-            'acceleration_x': -1.0, 'acceleration_y': -1.0, 'acceleration_z': -1.0,
-        }
-        return
+    """
+    UP = 'up'
+    DOWN = 'down'
+    LEFT = 'left'
+    RIGHT = 'right'
+    FORWARDS = 'forwards'
+    BACK = 'back'
 
 
-class TelloDrone:
+class RotateDirection(Enum):
+    """
+
+    """
+    CLOCKWISE = 'cw'
+    COUNTER_CLOCKWISE = 'ccw'
+
+
+class FlipDirection(Enum):
+    """
+
+    """
+    LEFT = 'l'
+    RIGHT = 'r'
+    FORWARDS = 'f'
+    BACK = 'b'
+
+
+class TelloDrone(Observable):
     # Network constants
     BASE_SSID = 'TELLO-'
     NETWORK_SCAN_DELAY = 0.5
@@ -137,35 +74,49 @@ class TelloDrone:
     # state stream constants
     STATE_PORT = 8890
     STATE_DELAY = 0.1
+    NUM_BASELINE_VALS = 10
 
     # video stream constants
     VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
     FRAME_DELAY = 1
 
-    def __init__(self):
+    def __init__(self, adapter_name: str, receive_timeout: float = 4.0):
         """
-        todo    fix issue
-                    ...
-                    [h264 @ 00000269a35be080] non-existing PPS 0 referenced
-                    [h264 @ 00000269a35be080] decode_slice_header error
-                    [h264 @ 00000269a35be080] no frame!
-                    ...
-        todo    make observer from Andrutil
-        todo    rl agent to handle send rate - minimize time to react after sending command
-        todo    add check before sending land to make sure the drone is established
-                seems to react better if the drone is stable before sending next command
+        The Tello SDK connects to the aircraft through a Wi-Fi UDP port, allowing users to control the
+        drone with text commands
+
+        If no command is received for 15 seconds, the tello will land automatically.
+        Long press Tello for 5 seconds while Tello is on, and the indicator light will turn off and then
+        flash yellow. When the indicator light shows a flashing yellow light, the Wi-Fi SSID and password
+        will be reset to the factory settings, and there is no password by default.
+        For Tello use SDK 1.3 for Tello EDU SDK 2.0.
+
+        Commands can be broken down into three sets:
+            Control
+                Returns 'ok' if the command was successful
+                Returns 'error' or an informational result code if the command failed
+            Set
+                Sets new sub-parameter values
+                Returns 'ok' if the command was successful
+                Returns 'error' or an informational result code if the command failed
+            Read
+                Returns the current value of the sub-parameter
         """
+        Observable.__init__(self)
         current_time = time.time()
         date_time = datetime.fromtimestamp(time.time())
         time_str = date_time.strftime("%Y-%m-%d-%H-%M-%S")
 
+        # identification information
         self.name = 'Tello'
         self.id = f'{self.name}_{time_str}_{int(current_time)}'
+
         self.save_directory = os.path.join(DATA_DIR, 'tello', f'{self.id}')
         if not os.path.isdir(self.save_directory):
             os.makedirs(self.save_directory)
 
         # wifi network info
+        self.adapter_name = adapter_name
         self.drone_ssid = None
         self.network_connected = False
         self.metadata_fname = os.path.join(self.save_directory, f'metadata_{self.id}.json')
@@ -178,22 +129,130 @@ class TelloDrone:
         # receive state messages
         self.state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.state_socket.bind((self.ANY_HOST, self.STATE_PORT))
+        self.receive_timeout = receive_timeout
 
         # send and receive message logging
         self.message_history = []
         self.message_history_fname = os.path.join(self.save_directory, f'messages_{self.id}.json')
+        self.message_lock = threading.Lock()
 
         # state information
         self.state_stream_running = False
         self.state_history = []
+        self.state_lock = threading.Lock()
         self.state_baseline = {}
         self.state_history_fname = os.path.join(self.save_directory, f'states_{self.id}.json')
 
         # video stream
         self.frame_history = []
+        self.video_lock = threading.Lock()
         self.video_capture = None
         self.video_writer = None
         self.video_fname = os.path.join(self.save_directory, f'{self.id}.avi')
+
+        # drone status
+        self.sdk_mode = False
+        self.is_flying = False
+        return
+
+    def __send_command(self, command: str):
+        """
+        todo    use a send queue to enforce message order/spacing
+
+        :param command:
+        :return:
+        """
+        if not self.network_connected:
+            return 'drone is not connected'
+
+        initial_time = None
+        send_time = None
+        receive_time = None
+        msg = command
+        try:
+            # adding a slight delay before sending the message seems to make the tello drone happy
+            sleep(self.SEND_DELAY)
+
+            msg = command.encode(encoding='utf-8')
+            self.set_changed_message(
+                {'timestamp': time.time(), 'type': 'status','value': f'Sending message: {msg}'}
+            )
+            initial_time = time.time()
+            func_args = (msg, self.tello_address)
+            _, send_time = time_function(self.client_socket.sendto, *func_args)
+
+            self.client_socket.settimeout(self.receive_timeout)
+            func_args = (self.BUFFER_SIZE,)
+            response, receive_time = time_function(self.client_socket.recvfrom, *func_args)
+            if isinstance(response, Exception):
+                response_str = str(response)
+            else:
+                (response_bytes, _) = response
+                response_str = response_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            response_str = 'error'
+        with self.message_lock:
+            self.message_history.append({
+                'timestamp': initial_time,
+                'sent': msg, 'send_time': send_time,
+                'response': response_str, 'receive_time': receive_time
+            })
+        self.set_changed_message(
+            {'timestamp': time.time(), 'type': 'status', 'value': f'Response: {response_str}'}
+        )
+        return response_str
+
+    def __connect_wifi(self):
+        """
+        Assumes only one drone network - if multiple, uses first one listed
+
+        :return:
+        """
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Attempting to discover drone SSID: {self.name}'})
+        while not self.drone_ssid:
+            netsh_toggle_adapter(adapter_name=self.adapter_name)
+
+            ssid_list = netsh_find_ssid_list(mode='bssid')
+            for each_ssid in ssid_list:
+                if each_ssid.startswith(self.BASE_SSID):
+                    self.drone_ssid = each_ssid
+                    break
+            else:
+                sleep(self.NETWORK_SCAN_DELAY)
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Drone network discovered: {self.drone_ssid}'})
+        ################################################################
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Attempting to establish connection to wifi network: {self.drone_ssid}'})
+        while not self.network_connected:
+            connection_results, connection_success = netsh_connect_network(
+                network_name=self.drone_ssid, interface=self.adapter_name
+            )
+            if connection_success:
+                self.network_connected = True
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Connection to drone network established: {self.drone_ssid}'})
+        return
+
+    def __init_sdk_mode(self):
+        """
+
+        :return:
+        """
+        sdk_enabled = False
+        while not sdk_enabled:
+            self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                      'value': f'Initializing SDK mode of drone: {self.name}'})
+            message_response = self.__send_command('command')
+            if message_response == 'ok':
+                sdk_enabled = True
+            sleep(self.SEND_DELAY)
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'SDK mode enabled: {self.name}'})
+        ################################################################
+        self.start_video_thread()
+        self.start_state_thread()
         return
 
     def connect(self):
@@ -201,22 +260,28 @@ class TelloDrone:
 
         :return:
         """
-        self.connect_wifi()
-        ################################################################
-        self.connect_drone()
-        ################################################################
-        self.start_state_thread()
-        self.start_video_thread()
+        self.__connect_wifi()
+        connected = False
+        while not connected:
+            try:
+                self.__init_sdk_mode()
+                connected = True
+                self.set_changed_message({'timestamp': time.time(), 'type': 'connect', 'value': True})
+            except RuntimeError:
+                pass
         return
 
     def cleanup(self):
-        self.set_video_stream_off()
+        """
+
+        :return:
+        """
+        self.control_streamoff()
         self.state_stream_running = False
 
         # slight delay to make sure all threads end properly
         sleep(1)
 
-        # todo    build state baseline from first n values
         meta_data = {
             'id': self.id, 'ssid': self.drone_ssid,
             'num_messages': len(self.message_history),
@@ -226,58 +291,55 @@ class TelloDrone:
         with open(self.metadata_fname, 'w+') as save_file:
             json.dump(fp=save_file, obj=meta_data, indent=2)
 
-        with open(self.message_history_fname, 'w+') as save_file:
-            json.dump(fp=save_file, obj=self.message_history, indent=2)
+        with self.message_lock:
+            with open(self.message_history_fname, 'w+') as save_file:
+                json.dump(fp=save_file, obj=self.message_history, indent=2)
 
-        with open(self.state_history_fname, 'w+') as save_file:
-            json.dump(fp=save_file, obj=self.state_history, indent=2)
-        return
-
-    def connect_drone(self):
-        print(f'Initializing SDK mode of drone: {self.name}')
-        message_response = self.__send_command('command', wait_for_response=True)
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Unable to connect to drone')
-        print(f'SDK mode enabled: {self.name}')
-        return
-
-    def connect_wifi(self):
-        """
-        Assumes only one drone network - if multiple, uses first one listed
-
-        :return:
-        """
-        print(f'Attempting to discover drone SSID: {self.name}')
-        while not self.drone_ssid:
-            netsh_toggle_adapter(adapter_name='Wi-Fi')
-
-            ssid_list = netsh_find_ssid_list(mode='bssid')
-            for each_ssid in ssid_list:
-                if each_ssid.startswith(self.BASE_SSID):
-                    self.drone_ssid = each_ssid
-                    break
-            else:
-                sleep(self.NETWORK_SCAN_DELAY)
-        print(f'Drone network discovered: {self.drone_ssid}')
-        ################################################################
-        print(f'Attempting to establish connection to wifi network: {self.drone_ssid}')
-        while not self.network_connected:
-            connection_results, connection_success = netsh_connect_network(network_name=self.drone_ssid)
-            if connection_success:
-                self.network_connected = True
-        print(f'Connection to drone network established: {self.drone_ssid}')
+        with self.state_lock:
+            with open(self.state_history_fname, 'w+') as save_file:
+                json.dump(fp=save_file, obj=self.state_history, indent=2)
         return
 
     def start_state_thread(self):
-        print(f'Starting state thread from drone: {self.name}')
-        video_thread = threading.Thread(target=self.state_stream, args=(), daemon=True)
+        """
+
+        :return:
+        """
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Starting state thread from drone: {self.name}'})
+        video_thread = threading.Thread(target=self.listen_state, args=(), daemon=True)
         video_thread.start()
         while not self.state_stream_running:
             sleep(0.1)
-        print(f'State stream established: {self.name}')
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'State stream established: {self.name}'})
         return
 
-    def state_stream(self):
+    def listen_state(self):
+        """
+
+        :return:
+        """
+        baseline_list = []
+        for idx in range(0, self.NUM_BASELINE_VALS):
+            state_bytes, _ = self.state_socket.recvfrom(self.BUFFER_SIZE)
+            state_str = state_bytes.decode('utf-8').strip()
+            state_val_list = state_str.split(';')
+            state_dict = {
+                state_entry.split(':')[0]: state_entry.split(':')[1]
+                for state_entry in state_val_list
+                if len(state_entry) > 0
+            }
+            baseline_list.append(state_dict)
+        state_keys = baseline_list[0].keys()
+        for each_key in state_keys:
+            running_val = 0
+            for each_entry in baseline_list:
+                entry_val = float(each_entry[each_key])
+                running_val += entry_val
+            average_val = running_val / len(baseline_list)
+            self.state_baseline[each_key] = average_val
+
         self.state_stream_running = True
         while self.state_stream_running:
             try:
@@ -290,34 +352,108 @@ class TelloDrone:
                     for state_entry in state_val_list
                     if len(state_entry) > 0
                 }
-                # todo add lock
                 state_dict['timestamp'] = initial_time
-                self.state_history.append(state_dict)
+                with self.state_lock:
+                    self.state_history.append(state_dict)
+                self.set_changed_message({'timestamp': time.time(), 'type': 'state', 'value': state_dict})
             except Exception as e:
-                print(f'{e}')
+                self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                          'value': f'{e}'})
             sleep(self.STATE_DELAY)
         return
 
+    def is_state_listening(self):
+        """
+
+        :return:
+        """
+        return self.state_stream_running
+
+    def get_state_raw(self):
+        """
+        Gets the latest state information from the stream to port 8890.
+
+        pitch:  %d:     attitude pitch, degrees
+        roll:   %d:     attitude roll, degrees
+        yaw:    %d:     attitude yaw, degrees
+        vgx:    %d:     speed x
+        vgy:    %d:     speed y
+        vgz:    %d:     speed z
+        templ:  %d:     lowest temperature, degrees celsius
+        temph:  %d:     highest temperature, degrees celsius
+        tof:    %d:     distance from point of takeoff, centimeters
+        h:      %d:     height from ground, centimeters
+        bat:    %d:     current battery level, percentage
+        baro:   %0.2f:  pressure measurement, cm
+        time:   %d:     time motors have been on, seconds
+        agx:    %0.2f:  acceleration x
+        agy:    %0.2f:  acceleration y
+        agz:    %0.2f:  acceleration z
+
+        :return:
+        """
+        return self.state_history[-1]
+
+    def get_state(self):
+        """
+        Gets the latest state information from the stream to port 8890.
+
+        pitch:  %d:     attitude pitch, degrees
+        roll:   %d:     attitude roll, degrees
+        yaw:    %d:     attitude yaw, degrees
+        vgx:    %d:     speed x
+        vgy:    %d:     speed y
+        vgz:    %d:     speed z
+        templ:  %d:     lowest temperature, degrees celsius
+        temph:  %d:     highest temperature, degrees celsius
+        tof:    %d:     distance from point of takeoff, centimeters
+        h:      %d:     height from ground, centimeters
+        bat:    %d:     current battery level, percentage
+        baro:   %0.2f:  pressure measurement, cm
+        time:   %d:     time motors have been on, seconds
+        agx:    %0.2f:  acceleration x
+        agy:    %0.2f:  acceleration y
+        agz:    %0.2f:  acceleration z
+
+        :return:
+        """
+        last_state = self.state_history[-1]
+        for each_key, each_val in last_state.items():
+            baseline_val = self.state_baseline[each_key]
+            last_state[each_key] = each_val - baseline_val
+        return last_state
+
     def start_video_thread(self):
-        print(f'Starting video thread from drone: {self.name}')
-        video_thread = threading.Thread(target=self.video_stream, args=(), daemon=True)
+        """
+
+        :return:
+        """
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Starting video thread from drone: {self.name}'})
+        video_thread = threading.Thread(target=self.listen_video, args=(), daemon=True)
         video_thread.start()
-        while not self.video_stream_running():
+        while not self.is_video_listening():
             sleep(0.1)
-        print(f'Video stream established: {self.name}')
+        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                  'value': f'Video stream established: {self.name}'})
         return
 
-    def video_stream(self):
-        self.set_video_stream_on()
+    def listen_video(self):
+        """
+        always on
+
+        :return:
+        """
+        self.control_streamon()
 
         self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL, cv2.CAP_FFMPEG)
         if not self.video_capture.isOpened():
-            raise RuntimeError('Could not open video stream')
+            return 'Could not open video stream'
 
         # discard first read and make sure all is reading correctly
         read_success, video_frame = self.video_capture.read()
         if not read_success:
-            raise RuntimeError('Error reading from video stream')
+            return 'Error reading from video stream'
 
         # save capture width and height for later when saving the video
         fps = 30
@@ -329,79 +465,467 @@ class TelloDrone:
             fps, (frame_width, frame_height)
         )
 
-        window_name = 'Video feed'
-        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
         while self.video_capture.isOpened():
             read_success, video_frame = self.video_capture.read()
             if read_success:
-                cv2.imshow(window_name, video_frame)
+                self.set_changed_message({'timestamp': time.time(), 'type': 'video', 'value': video_frame})
                 self.video_writer.write(video_frame.astype('uint8'))
-                self.frame_history.append(video_frame)
+                with self.video_lock:
+                    self.frame_history.append(video_frame)
             cv2.waitKey(self.FRAME_DELAY)
         self.video_capture.release()
         self.video_writer.release()
         cv2.destroyAllWindows()
-        self.set_video_stream_off()
         return
 
-    def video_stream_running(self):
-        return self.video_capture and self.video_capture.isOpened()
-
-    def __send_command(self, command: str, wait_for_response: bool):
+    def is_video_listening(self):
         """
-        todo    use a send queue to enforce message order/spacing
 
-        :param command:
-        :param wait_for_response:
         :return:
         """
-        try:
-            # adding a slight delay before sending the message seems to make the tello drone happy
-            sleep(self.SEND_DELAY)
+        return self.video_capture and self.video_capture.isOpened()
 
-            initial_time = time.time()
-            msg = command.encode(encoding='utf-8')
-            func_args = (msg, self.tello_address)
-            _, send_time = time_function(self.client_socket.sendto, *func_args)
+    def get_frame(self):
+        """
+        Gets the latest video frame from the stream to port 11111.
 
-            response_str = None
-            receive_time = None
-            if wait_for_response:
-                func_args = (self.BUFFER_SIZE,)
-                (response_bytes, _), receive_time = time_function(self.client_socket.recvfrom, *func_args)
-                response_str = response_bytes.decode('utf-8')
+        :return:
+        """
+        return self.frame_history[-1]
 
-            self.message_history.append({
-                'timestamp': initial_time,
-                'sent': command, 'send_time': send_time,
-                'response': response_str, 'receive_time': receive_time
-            })
-        except UnicodeDecodeError:
-            response_str = 'error'
-        return response_str
+    def control_command(self):
+        """
+        command
 
-    def takeoff(self):
-        message_response = self.__send_command('takeoff', wait_for_response=True)
-        return message_response != 'OK' and message_response != 'ok'
+        puts the drone into SDK mode
 
-    def land(self):
-        message_response = self.__send_command('land', wait_for_response=True)
-        return message_response != 'OK' and message_response != 'ok'
+        ok, error
 
-    def set_video_stream_off(self):
-        message_response = self.__send_command('streamoff', wait_for_response=True)
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Could not stop video stream')
-        return
+        :return:
+        """
+        command_str = f'command'
+        message_response = self.__send_command(command_str)
+        return message_response
 
-    def set_video_stream_on(self):
-        message_response = self.__send_command('streamon', wait_for_response=True)
-        if message_response != 'OK' and message_response != 'ok':
-            raise RuntimeError('Error when starting stream from drone')
-        return
+    def control_takeoff(self):
+        """
+        takeoff
 
-    def get_state(self):
-        return self.state_history[-1]
+        auto-takeoff
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'takeoff'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_land(self):
+        """
+        lland
+
+        auto-land
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'land'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_streamon(self):
+        """
+        streamon
+
+        sets the video stream on
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'streamon'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_streamoff(self):
+        """
+        streamoff
+
+        sets the video stream off
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'streamoff'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_emergency(self):
+        """
+        emergency
+
+        immediately stops all motors
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'emergency'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_up(self, distance_cm):
+        """
+        up x
+
+        fly up a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'up {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_down(self, distance_cm):
+        """
+        down x
+
+        fly down a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'down {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_left(self, distance_cm):
+        """
+        left x
+
+        fly left a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'left {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_right(self, distance_cm):
+        """
+        right x
+
+        fly right a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'right {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_forward(self, distance_cm):
+        """
+        forward x
+
+        fly forward a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'forward {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_back(self, distance_cm):
+        """
+        back x
+
+        fly backwards a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'back {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_cw(self, degrees: float):
+        """
+        cw x
+
+        rotate x degrees clockwise
+        x: 1 - 3600
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'cw {int(degrees)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_ccw(self, degrees: float):
+        """
+        cxw x
+
+        rotate x degrees counter clockwise
+        x: 1 - 3600
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'ccw {int(degrees)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_flip(self, direction: FlipDirection):
+        """
+        flip x
+
+        perform a flip
+        l: left
+        r: right
+        f: forward
+        b: back
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'flip {direction.value}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_go(self, x_end: int, y_end: int, z_end: int, speed_cms: float):
+        """
+        go x y z speed
+
+        fly to position (x,y,z) at speed (cm/s)
+        x: 20-500
+        y: 20-500
+        z: 20-500
+        speed: 10-100
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'go {x_end} {y_end} {z_end} {int(speed_cms)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_curve(self, x_start, y_start, z_start, x_end, y_end, z_end, speed_cms):
+        """
+        curve x1 y1 z1 x2 y2 z2 speed
+
+        fly a curve defined by the starting and ending vector positions at speed (cm/s)
+        x1, x2: 20-500
+        y1, y2: 20-500
+        z1, z2: 20-500
+        Note:
+            The arc radius must be within the range of 0.5-10 meters.
+            x/y/z can’t be between -20 – 20 at the same time.
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'curve {x_start} {y_start} {z_start} {x_end} {y_end} {z_end} {int(speed_cms)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def set_speed(self, speed_cms):
+        """
+        speed x
+
+        set speed to x (cm/s)
+        x: 10-100
+
+        ok, error
+
+        :param speed_cms:
+        :return:
+        """
+        command_str = f'speed {int(speed_cms)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def set_rc(self, left_right, forward_back, up_down, yaw):
+        """
+        Send RC control via four channels.
+
+        left/right (-100~100)
+        forward/backward (-100~100)
+        up/down (-100~100)
+        yaw (-100~100)
+
+        ok
+        error
+
+        :return:
+        """
+        command_str = f'rc {left_right} {forward_back} {up_down} {yaw}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_speed(self):
+        """
+        speed?
+
+        get current speed (cm/s)
+
+        x: 1-100
+
+        :return:
+        """
+        command_str = f'speed?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_battery(self):
+        """
+        battery?
+
+        get current battery percentage
+
+        x: 0-100
+
+        :return:
+        """
+        command_str = f'battery?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_time(self):
+        """
+        time?
+
+        get current fly time (s)
+
+        time
+        :return:
+        """
+        command_str = f'time?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_wifi(self):
+        """
+        wifi?
+
+        get Wi-Fi SNR
+
+        snr
+
+        :return:
+        """
+        command_str = f'wifi?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_height(self):
+        """
+
+        height?
+
+        get height (cm)
+
+        x: 0-3000
+
+        :return:
+        """
+        command_str = f'height?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_temp(self):
+        """
+        temp?
+
+        get temperature (C)
+
+        x: 0-90
+
+        :return:
+        """
+        command_str = f'temp?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_attitude(self):
+        """
+        attitude?
+
+        get IMU attitude data
+
+        pitch roll yaw
+
+        :return:
+        """
+        command_str = f'attitude?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_baro(self):
+        """
+        baro?
+
+        get barometer value (m)
+
+        x
+
+        :return:
+        """
+        command_str = f'baro?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_acceleration(self):
+        """
+        acceleration?
+
+        get IMU angular acceleration data (0.001g)
+
+        x y z
+
+        :return:
+        """
+        command_str = f'acceleration?'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def get_tof(self):
+        """
+        tof?
+
+        get distance value from point of takeoff (cm)
+
+        x: 30-1000
+
+        :return:
+        """
+        command_str = f'tof?'
+        message_response = self.__send_command(command_str)
+        return message_response
 
 
 def main(main_args):
@@ -413,12 +937,42 @@ def main(main_args):
     send_delay = main_args.get('send_delay', 0.1)
     scan_delay = main_args.get('scan_delay', 0.1)
     ###################################
-    tello_drone = TelloDrone()
+    tello_drone = TelloDrone(adapter_name='Wi-Fi')
+    print_observer = PrintObserver(sub_list=[tello_drone])
+    ###################################
     tello_drone.NETWORK_SCAN_DELAY = scan_delay
     tello_drone.SEND_DELAY = send_delay
-    ###################################
     tello_drone.connect()
-    #
+    ###################################
+    battery = tello_drone.get_battery()
+    speed = tello_drone.get_speed()
+    time_aloft = tello_drone.get_time()
+    wifi = tello_drone.get_wifi()
+    height = tello_drone.get_height()
+    accel = tello_drone.get_acceleration()
+    attitude = tello_drone.get_attitude()
+    baro = tello_drone.get_baro()
+    temp = tello_drone.get_temp()
+    tof = tello_drone.get_tof()
+    state = tello_drone.get_state()
+
+    print('-' * TERMINAL_COLUMNS)
+    print(f'Battery:        {battery}')
+    print(f'wifi info:      {wifi}')
+    print('-' * TERMINAL_COLUMNS)
+    print(f'Speed:          {speed}')
+    print(f'height:         {height}')
+    print(f'attitude:       {attitude}')
+    print(f'time aloft:     {time_aloft}')
+    print(f'time of flight: {tof}')
+    print(f'acceleration:   {accel}')
+    print(f'barometer:      {baro}')
+    print(f'temperature:    {temp}')
+    print('-' * TERMINAL_COLUMNS)
+    for each_key, each_val in state.items():
+        print(f'{each_key}: {each_val}')
+    print('-' * TERMINAL_COLUMNS)
+
     # start_time = time.time()
     # tello_drone.takeoff()
     # command_time = time.time()

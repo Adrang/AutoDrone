@@ -116,11 +116,11 @@ class GameOfLife:
                        size=(15, 15)),
              sg.Text('', size=(3, 1), key='-S1-OUT-'),
              sg.Text('  Num Generations'), sg.Slider([0, 20000],
-                                                  default_value=4000,
-                                                  orientation='h',
-                                                  size=(15, 15),
-                                                  enable_events=True,
-                                                  key='-SLIDER2-'),
+                                                     default_value=4000,
+                                                     orientation='h',
+                                                     size=(15, 15),
+                                                     enable_events=True,
+                                                     key='-SLIDER2-'),
              sg.Text('', size=(3, 1), key='-S2-OUT-')]
         ]
 

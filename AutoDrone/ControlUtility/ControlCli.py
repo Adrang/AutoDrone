@@ -5,14 +5,12 @@
 import argparse
 import threading
 
-from AutoDrone.Drone import Drone
-from AutoDrone.Drone.Drone import MoveDirection, RotateDirection, FlipDirection
 from AutoDrone.Drone.TelloDrone import TelloDrone
 
 
 class ControlCli:
 
-    def __init__(self, drone: Drone):
+    def __init__(self, drone: TelloDrone):
         self.drone = drone
         self.running = False
 
@@ -20,13 +18,13 @@ class ControlCli:
             'exit': self.destroy,
         }
 
-        move_option_list = {f'move {direction.name}': direction.value for direction in MoveDirection}
-        flip_option_list = {f'flip {direction.name}': direction.value for direction in FlipDirection}
-        rotate_option_list = {f'rotate {direction.name}': direction.value for direction in RotateDirection}
+        # move_option_list = {f'move {direction.name}': direction.value for direction in MoveDirection}
+        # flip_option_list = {f'flip {direction.name}': direction.value for direction in FlipDirection}
+        # rotate_option_list = {f'rotate {direction.name}': direction.value for direction in RotateDirection}
 
-        self.option_menu = dict(self.option_menu, **move_option_list)
-        self.option_menu = dict(self.option_menu, **flip_option_list)
-        self.option_menu = dict(self.option_menu, **rotate_option_list)
+        # self.option_menu = dict(self.option_menu, **move_option_list)
+        # self.option_menu = dict(self.option_menu, **flip_option_list)
+        # self.option_menu = dict(self.option_menu, **rotate_option_list)
         return
 
     def display_menu(self):
@@ -48,7 +46,7 @@ class ControlCli:
         return
 
     def destroy(self):
-        self.drone.disconnect()
+        self.drone.cleanup()
         return
 
 
@@ -58,9 +56,14 @@ def main(main_args):
     :param main_args:
     :return:
     """
-    tout = main_args.get('timeout', 1)
+    send_delay = main_args.get('send_delay', 0.1)
+    scan_delay = main_args.get('scan_delay', 0.1)
     ###################################
-    tello_drone = TelloDrone(timeout=tout)
+    tello_drone = TelloDrone()
+    tello_drone.NETWORK_SCAN_DELAY = scan_delay
+    tello_drone.SEND_DELAY = send_delay
+    tello_drone.connect()
+
     control_cli = ControlCli(drone=tello_drone)
     ###################################
     print(tello_drone)
