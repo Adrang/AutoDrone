@@ -39,12 +39,6 @@ class ControlGui(Observer):
         self.speech_text = speech_translator
         self.speech_text.start_listener()
 
-        self.state_history = []
-        self.drone_frame_history = []
-        self.auto_frame_history = []
-        self.gesture_frame_history = []
-        self.speech_frame_history = []
-
         self.color_connected = ('white', 'black')
         self.color_disconnected = ('black', 'white')
 
@@ -188,48 +182,26 @@ class ControlGui(Observer):
         if isinstance(source, TelloDrone):
             if message_type == 'connect' and message_value:
                 button_drone = self.window['button_drone']
-                button_drone.update(disabled=False)
-                button_drone.update('Panic')
-                button_drone.metadata['function'] = 'Panic'
-
-                button_update_title = self.window['button_update_title']
-                button_takeoff = self.window['button_takeoff']
-                button_land = self.window['button_land']
-
-                button_update_title.update(disabled=False)
-                button_takeoff.update(disabled=False)
-                button_land.update(disabled=False)
-
-                for direction in self.button_direction_list:
-                    for side in ['left', 'right']:
-                        button_key = f'button_{side}_{direction}'
-                        button_elem = self.window[button_key]
-                        button_elem.update(disabled=False)
-
-                update_thread = threading.Thread(target=self.update_battery_wifi, daemon=True)
-                update_thread.start()
-            elif message_type == 'video':
-                self.drone_frame_history.append(message_value)
-            elif message_type == 'state':
-                self.state_history.append(message_value)
-            elif message_type == 'status':
-                log_elem = self.window['multiline_log']
-                log_elem.update(value=f'{source.__class__.__name__}: {message_type} > {message_value}\n', append=True)
-        elif isinstance(source, AutoControl):
-            if message_type == 'video':
-                self.auto_frame_history.append(message_value)
-        elif isinstance(source, GestureControl):
-            if message_type == 'video':
-                self.gesture_frame_history.append(message_value)
-        elif isinstance(source, Speech2Text):
-            if message_type == 'decode':
-                log_elem = self.window['multiline_log']
-                log_elem.update(value=f'{source.__class__.__name__}: {message_type} > {message_value}\n', append=True)
-                if message_value == 'close':
-                    self.run_mode = None
-                elif message_value == 'take off':
-                    # speech recognition module splits this command into two words
-                    self.drone.control_takeoff()
+                # button_drone.update(disabled=False)
+                # button_drone.update('Panic')
+                # button_drone.metadata['function'] = 'Panic'
+                #
+                # button_update_title = self.window['button_update_title']
+                # button_takeoff = self.window['button_takeoff']
+                # button_land = self.window['button_land']
+                #
+                # button_update_title.update(disabled=False)
+                # button_takeoff.update(disabled=False)
+                # button_land.update(disabled=False)
+                #
+                # for direction in self.button_direction_list:
+                #     for side in ['left', 'right']:
+                #         button_key = f'button_{side}_{direction}'
+                #         button_elem = self.window[button_key]
+                #         button_elem.update(disabled=False)
+                #
+                # update_thread = threading.Thread(target=self.update_battery_wifi, daemon=True)
+                # update_thread.start()
         return
 
     def run_gui(self):
@@ -281,7 +253,7 @@ class ControlGui(Observer):
                 key_func = key_func_dict[event]
                 key_func(event=event, values=values)
             elif event == '__TIMEOUT__':
-                self.action_timeout()
+                self.action_timeout(event=event, values=values)
         return
 
     def destroy(self):
@@ -294,158 +266,148 @@ class ControlGui(Observer):
         if 'values' not in kwargs:
             return
 
+        last_frame = None
+        last_state = None
+
         self.run_mode = kwargs['values']['tabgroup_run_mode']
-        frame_history = None
-
         if self.run_mode == 'Manual':
-            if len(self.drone_frame_history) > 0:
-                frame_history = self.drone_frame_history
-        elif self.run_mode == 'Auto':
-            if len(self.auto_frame_history) > 0:
-                frame_history = self.auto_frame_history
-        elif self.run_mode == 'Gesture':
-            if len(self.gesture_frame_history) > 0:
-                frame_history = self.gesture_frame_history
-        elif self.run_mode == 'Speech':
-            if len(self.speech_frame_history) > 0:
-                frame_history = self.speech_frame_history
+            last_frame = self.drone.get_last_frame()
+            last_state = self.drone.get_last_state()
 
-        if len(self.state_history) > 0:
-            last_state = self.state_history[-1]
+        if last_state is not None:
             state_elem = self.window['multiline_state']
             state_elem.update(value=f'', append=False)
             for each_key, each_val in last_state.items():
                 state_elem.update(value=f'{each_key}: {each_val}\n', append=True)
 
-        if frame_history:
+        if last_frame is not None:
             image_elem = self.window[f'image_{self.run_mode.lower()}']
-            last_frame = frame_history[-1]
             resized_frame = cv2.resize(last_frame, dsize=(self.video_width, self.video_height))
             frame_bytes = cv2.imencode('.png', resized_frame)[1].tobytes()
             image_elem.update(data=frame_bytes)
         return
 
     def action_left_up(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, self.speed, 0, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move forward\n', append=True)
+        move_args = (0, self.speed, 0, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move forward: {response}\n', append=True)
         return
 
     def action_left_down(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, -1 * self.speed, 0, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move back\n', append=True)
+        move_args = (0, -1 * self.speed, 0, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move back: {response}\n', append=True)
         return
 
     def action_left_right(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, 0, 0, -1 * self.speed)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to rotate clockwise\n', append=True)
+        move_args = (0, 0, 0, -1 * self.speed)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Rotate clockwise: {response}\n', append=True)
         return
 
     def action_left_left(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, 0, 0, self.speed)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to rotate counter clockwise\n', append=True)
+        move_args = (0, 0, 0, self.speed)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Rotate counter clockwise: {response}\n', append=True)
         return
 
     def action_right_up(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, 0, self.speed, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move up\n', append=True)
+        move_args = (0, 0, self.speed, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move up: {response}\n', append=True)
         return
 
     def action_right_down(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (0, 0, -1 * self.speed, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move down\n', append=True)
+        move_args = (0, 0, -1 * self.speed, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move down: {response}\n', append=True)
         return
 
     def action_right_right(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (self.speed, 0, 0, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move left\n', append=True)
+        move_args = (self.speed, 0, 0, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move right: {response}\n', append=True)
         return
 
     def action_right_left(self, **kwargs):
-        # left_right, forward_back, up_down, yaw
-        move_args = (-1 * self.speed, 0, 0, 0)
-        drone_func = self.drone.set_rc
-        control_thread = threading.Thread(target=drone_func, args=move_args, daemon=True)
-        control_thread.start()
-
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Left panel: ', append=True)
-        log_elem.update(value=f'{drone_func.__name__} {move_args}\n', append=True)
+        log_elem.update(value=f'Attempting to move right\n', append=True)
+        move_args = (-1 * self.speed, 0, 0, 0)
+        response = self.drone.set_rc(*move_args)
+        log_elem.update(value=f'Move left: {response}\n', append=True)
         return
 
     def action_drone(self, **kwargs):
         button_drone = self.window['button_drone']
         drone_function = button_drone.metadata['function']
         if drone_function == 'connect':
-            connect_thread = threading.Thread(target=self.drone.connect, daemon=True)
-            connect_thread.start()
+            log_elem = self.window['multiline_log']
+            log_elem.update(value=f'Attempting to connect to drone\n', append=True)
+            log_elem.update(value=f'This may take some time...\n', append=True)
             button_drone.update(disabled=True)
+            response = self.drone.connect()
+            button_drone.update(disabled=False)
+            log_elem.update(value=f'Connected: {response}\n', append=True)
+
+            button_drone.update('Panic')
+            button_drone.metadata['function'] = 'Panic'
+
+            button_update_title = self.window['button_update_title']
+            button_takeoff = self.window['button_takeoff']
+            button_land = self.window['button_land']
+
+            button_update_title.update(disabled=False)
+            button_takeoff.update(disabled=False)
+            button_land.update(disabled=False)
+
+            for direction in self.button_direction_list:
+                for side in ['left', 'right']:
+                    button_key = f'button_{side}_{direction}'
+                    button_elem = self.window[button_key]
+                    button_elem.update(disabled=False)
+
+            self.update_battery_wifi()
         elif drone_function == 'panic':
-            emergency_thread = threading.Thread(target=self.drone.control_emergency, daemon=True)
-            emergency_thread.start()
+            log_elem = self.window['multiline_log']
+            log_elem.update(value=f'PANICKING!\n', append=True)
+            button_drone.update(disabled=True)
+            response = self.drone.control_emergency()
+            button_drone.update(disabled=False)
+            log_elem.update(value=f'Panic: {response}\n', append=True)
         return
 
     def action_update_title(self, **kwargs):
-        update_thread = threading.Thread(target=self.update_battery_wifi, daemon=True)
-        update_thread.start()
+        log_elem = self.window['multiline_log']
+        log_elem.update(value=f'Updating battery and wifi levels\n', append=True)
+        self.update_battery_wifi()
         return
 
     def action_takeoff(self, **kwargs):
-        control_thread = threading.Thread(target=self.drone.control_takeoff, daemon=True)
-        control_thread.start()
+        log_elem = self.window['multiline_log']
+        log_elem.update(value=f'Attempting to takeoff\n', append=True)
+        response = self.drone.control_takeoff()
+        log_elem.update(value=f'Takeoff: {response}\n', append=True)
         return
 
     def action_land(self, **kwargs):
-        land_thread = threading.Thread(target=self.drone.control_land, daemon=True)
-        land_thread.start()
+        log_elem = self.window['multiline_log']
+        log_elem.update(value=f'Attempting to land\n', append=True)
+        response = self.drone.control_land()
+        log_elem.update(value=f'Land: {response}\n', append=True)
         return
 
     def action_speech_toggle(self, **kwargs):
@@ -455,6 +417,8 @@ class ControlGui(Observer):
         :param kwargs:
         :return:
         """
+        log_elem = self.window['multiline_log']
+        log_elem.update(value=f'Speech recognition is \n', append=True)
         return
 
 
