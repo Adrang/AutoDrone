@@ -9,27 +9,47 @@ import time
 from queue import Queue
 
 import cv2
-from Andrutil.ObserverObservable import Observer
 import numpy as np
 
 from AutoDrone import DATA_DIR
 
 
-class GestureControl(Observer):
+class GestureControl:
 
-    def __init__(self, observable_list: list):
-        Observer.__init__(self, observable_list=observable_list)
-
-        self.frame_queue = Queue()
+    def __init__(self, display_feed: bool):
+        self.__frame_queue = Queue()
         self.running = False
         self.process_thread = None
         self.window_name = 'Gesture Control'
+        self.display_feed = display_feed
 
         self.raw_history = []
         self.processed_history = []
         self.feature_history = []
         self.vector_history = []
+
+        self.smoothing_factor = 30
         return
+
+    def add_frame(self, new_frame):
+        self.__frame_queue.put(new_frame)
+        return
+
+    def get_last_frame_raw(self):
+        last_frame = self.raw_history[-1] if len(self.raw_history) > 0 else None
+        return last_frame
+
+    def get_last_frame_processed(self):
+        last_frame = self.processed_history[-1] if len(self.processed_history) > 0 else None
+        return last_frame
+
+    def get_smoothed_vector(self):
+        if len(self.vector_history) == 0:
+            return None
+        num_frames = min(self.smoothing_factor, len(self.vector_history))
+        last_frame_list = self.vector_history[-1 * num_frames]
+        smoothed_vector = np.average(last_frame_list, axis=0)
+        return smoothed_vector
 
     def start_process_thread(self):
         self.process_thread = threading.Thread(target=self.__process_frame_queue, daemon=True)
@@ -45,7 +65,7 @@ class GestureControl(Observer):
         :return:
         """
         num_initial = 10
-        raw_scale_factor = 0.25
+        frame_resize_factor = 0.25
         draw_color = (0, 255, 0)
         text_color = (0, 0, 255)
         text_font = cv2.FONT_HERSHEY_SIMPLEX
@@ -57,7 +77,6 @@ class GestureControl(Observer):
         text_dy = text_spacing * 1
         start_arrow = (text_spacing * 1, text_spacing * 1)
         arrow_len = text_spacing * 1
-        vector_smoothing_factor = 7  # todo smooth vector based on past number of points
 
         st_max_corners = 5
         st_quality_level = 0.2
@@ -81,16 +100,15 @@ class GestureControl(Observer):
         }
 
         # use first frame to compute image characteristics
-        first_frame = self.frame_queue.get(block=True)
-        frame_width = int(first_frame.shape[1] * raw_scale_factor)
-        frame_height = int(first_frame.shape[0] * raw_scale_factor)
+        first_frame = self.__frame_queue.get(block=True)
+        frame_width = int(first_frame.shape[1] * frame_resize_factor)
+        frame_height = int(first_frame.shape[0] * frame_resize_factor)
         frame_dims = (frame_width, frame_height)
 
-        # build a set of initial frames
-        for idx in range(num_initial):
-            intial_frame = self.frame_queue.get(block=True)
-            intial_frame = cv2.resize(intial_frame, frame_dims, interpolation=cv2.INTER_AREA)
-            self.raw_history.append(intial_frame)
+        for frame_idx in range(num_initial):
+            frame = self.__frame_queue.get(block=True)
+            next_frame = cv2.resize(frame, frame_dims, interpolation=cv2.INTER_AREA)
+            self.raw_history.append(next_frame)
 
         prev_frame = self.raw_history[-1]
         prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -99,7 +117,7 @@ class GestureControl(Observer):
         base_angle = [1, 0]
         self.running = True
         while self.running:
-            next_frame = self.frame_queue.get(block=True)
+            next_frame = self.__frame_queue.get(block=True)
             next_frame = cv2.resize(next_frame, frame_dims, interpolation=cv2.INTER_AREA)
             next_mask = np.zeros_like(prev_frame)
 
@@ -110,6 +128,13 @@ class GestureControl(Observer):
 
             good_features_old = prev_features[status == 1]
             good_features_new = next_features[status == 1]
+            shape_good_old = good_features_old.shape
+            shape_good_new = good_features_new.shape
+            num_good_old = shape_good_old[0]
+            num_good_new = shape_good_new[0]
+            if num_good_old == 0 or num_good_new == 0:
+                # todo if hit this point, reinitialize system
+                continue
 
             first_feature_old = good_features_old[0, :]
             first_feature_new = good_features_new[0, :]
@@ -118,9 +143,7 @@ class GestureControl(Observer):
             new_x, new_y = first_feature_new.ravel()
             delta_list = []
 
-            # Draws line between new and old position with green color and 2 thickness
             total_mask = cv2.line(total_mask, (new_x, new_y), (old_x, old_y), draw_color, 2)
-            # Draws filled circle (thickness of -1) at new position with green color and radius of 3
             next_mask = cv2.circle(next_mask, (new_x, new_y), 3, draw_color, -1)
             for new_point, old_point in zip(good_features_new, good_features_old):
                 new_x, new_y = new_point.ravel()
@@ -166,32 +189,22 @@ class GestureControl(Observer):
             self.feature_history.append(good_features_new)
             self.vector_history.append(delta_list)
 
-            cv2.imshow(self.window_name, frame_stack)
-            cv2.waitKey(1)
+            if self.display_feed:
+                cv2.imshow(self.window_name, frame_stack)
+                cv2.waitKey(1)
         cv2.destroyWindow(self.window_name)
-        return
-
-    def update(self, source, update_message):
-        message_type = update_message['type']
-        message_value = update_message['value']
-        if message_type == 'video':
-            self.frame_queue.put(message_value)
         return
 
 
 def main(main_args):
-    from AutoDrone.ObservableVideo import ObservableVideo
-    from AutoDrone.PrintObserver import PrintObserver
+    from AutoDrone.VideoIterator import ObservableVideo
     ###################################
-    playback_file = main_args.get('playback_file', os.path.join(DATA_DIR, 'video', 'simple_0.mp4'))
+    playback_file = main_args.get('playback_file', os.path.join(DATA_DIR, 'video', 'tello_test_2.avi'))
     video_length = main_args.get('length', 20)
     ###################################
-    observable_video = ObservableVideo(video_fname=playback_file)
-    ###################################
-    gesture_control = GestureControl(observable_list=[observable_video])
+    gesture_control = GestureControl(display_feed=True)
+    observable_video = ObservableVideo(output=gesture_control, video_fname=playback_file)
     gesture_control.start_process_thread()
-    PrintObserver(observable_list=[gesture_control])
-    PrintObserver(observable_list=[observable_video])
     ###################################
     observable_video.start_video_thread()
     time.sleep(video_length)
@@ -200,7 +213,7 @@ def main(main_args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--playback_file', type=str, default=os.path.join(DATA_DIR, 'video', 'simple_0.mp4'),
+    parser.add_argument('--playback_file', type=str, default=os.path.join(DATA_DIR, 'video', 'tello_test_2.avi'),
                         help='')
     parser.add_argument('--length', type=int, default=21,
                         help='')
