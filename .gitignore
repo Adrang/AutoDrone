@@ -1,0 +1,14 @@
+.idea/
+/venv/
+
+/data/
+/logs/
+
+AutoDrone/__pycache__/
+AutoDrone/Drone/__pycache__/
+AutoDrone/AiControl/__pycache__/
+AutoDrone/AudioTranslate/__pycache__/
+
+AutoDrone.egg_info/
+
+/scripts/sandbox.py
