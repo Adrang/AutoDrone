@@ -27,6 +27,8 @@ class GestureControl(Observer):
 
         self.raw_history = []
         self.processed_history = []
+        self.feature_history = []
+        self.vector_history = []
         return
 
     def start_process_thread(self):
@@ -37,79 +39,135 @@ class GestureControl(Observer):
     def __process_frame_queue(self):
         """
         track the optical flow for these corners
-        https://docs.opencv.org/3.0-beta/modules/imgproc/doc/feature_detection.html#goodfeaturestotrack
+        https://docs.opencv.org/3.0-beta/modules/imgproc/doc/feature_detection.html
+        https://docs.opencv.org/3.0-beta/modules/video/doc/motion_analysis_and_object_tracking.html
 
         :return:
         """
-        num_delay = 10
+        num_initial = 10
         raw_scale_factor = 0.25
-        bg_history = 20
-        bg_thresh = 50
-        morph_kernel_size = (3, 3)
-        gauss_kernel_size = (3, 3)
-
-        shi_tomasi_params = {'maxCorners': 300, 'qualityLevel': 0.2, 'minDistance': 2, 'blockSize': 7}
-        lucas_kanade_params = {
-            'winSize': (15, 15),
-            'maxLevel': 2,
-            'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
-        }
         draw_color = (0, 255, 0)
+        text_color = (0, 0, 255)
+        text_font = cv2.FONT_HERSHEY_SIMPLEX
+        text_scale = 0.45
+        text_spacing = 14
+        text_thickness = 1
+        text_x0 = 0
+        text_y0 = text_spacing * 2
+        text_dy = text_spacing * 1
+        start_arrow = (text_spacing * 1, text_spacing * 1)
+        arrow_len = text_spacing * 1
+        vector_smoothing_factor = 7  # todo smooth vector based on past number of points
 
-        '''
-        History is the number of the last frames that are taken into consideration (by default 120).
-        The threshold value is the value used when computing the difference to extract the background.
-        A lower threshold will find more differences with the advantage of a more noisy image.
-        Detectshadows is a function of the algorithm that can remove the shadows if enabled.
-        '''
-        # bg_subtractor_mog2 = cv2.createBackgroundSubtractorMOG2(
-        #     history=bg_history,
-        #     varThreshold=bg_thresh,
-        #     detectShadows=True
-        # )
-        # morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, morph_kernel_size)
+        st_max_corners = 5
+        st_quality_level = 0.2
+        st_min_dist = 2
+        st_blocksize = 7
+
+        lk_win_size = (15, 15)
+        lk_max_level = 2
+        lk_criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
+
+        shi_tomasi_params = {
+            'maxCorners': st_max_corners,
+            'qualityLevel': st_quality_level,
+            'minDistance': st_min_dist,
+            'blockSize': st_blocksize
+        }
+        lucas_kanade_params = {
+            'winSize': lk_win_size,
+            'maxLevel': lk_max_level,
+            'criteria': lk_criteria
+        }
 
         # use first frame to compute image characteristics
         first_frame = self.frame_queue.get(block=True)
         frame_width = int(first_frame.shape[1] * raw_scale_factor)
         frame_height = int(first_frame.shape[0] * raw_scale_factor)
         frame_dims = (frame_width, frame_height)
-        first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-        prev = cv2.goodFeaturesToTrack(first_gray, mask=None, **shi_tomasi_params)
-        mask = np.zeros_like(first_frame)
 
-        for idx in range(num_delay):
+        # build a set of initial frames
+        for idx in range(num_initial):
             intial_frame = self.frame_queue.get(block=True)
             intial_frame = cv2.resize(intial_frame, frame_dims, interpolation=cv2.INTER_AREA)
             self.raw_history.append(intial_frame)
 
-        delayed_frame = self.raw_history[-1 * num_delay]
+        prev_frame = self.raw_history[-1]
+        prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        prev_features = cv2.goodFeaturesToTrack(prev_gray, mask=None, **shi_tomasi_params)
+        total_mask = np.zeros_like(prev_frame)
+        base_angle = [1, 0]
         self.running = True
         while self.running:
             next_frame = self.frame_queue.get(block=True)
             next_frame = cv2.resize(next_frame, frame_dims, interpolation=cv2.INTER_AREA)
+            next_mask = np.zeros_like(prev_frame)
+
+            next_gray = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
+            next_features, status, error = cv2.calcOpticalFlowPyrLK(
+                prev_gray, next_gray, prev_features, None, **lucas_kanade_params
+            )
+
+            good_features_old = prev_features[status == 1]
+            good_features_new = next_features[status == 1]
+
+            first_feature_old = good_features_old[0, :]
+            first_feature_new = good_features_new[0, :]
+
+            old_x, old_y = first_feature_old.ravel()
+            new_x, new_y = first_feature_new.ravel()
+            delta_list = []
+
+            # Draws line between new and old position with green color and 2 thickness
+            total_mask = cv2.line(total_mask, (new_x, new_y), (old_x, old_y), draw_color, 2)
+            # Draws filled circle (thickness of -1) at new position with green color and radius of 3
+            next_mask = cv2.circle(next_mask, (new_x, new_y), 3, draw_color, -1)
+            for new_point, old_point in zip(good_features_new, good_features_old):
+                new_x, new_y = new_point.ravel()
+                old_x, old_y = old_point.ravel()
+
+                delta_x = new_x - old_x
+                delta_y = new_y - old_y
+                delta_list.append((delta_x, delta_y))
+
+            total_delta = np.average(delta_list, axis=0)
+            total_mag = np.linalg.norm(total_delta)
+
+            total_unit = total_delta / np.linalg.norm(total_mag)
+            dot_product = np.dot(base_angle, total_unit)
+            total_angle = np.arccos(dot_product)
+
+            text_list = [
+                {'field': f'Magnitude', 'value': f'{total_mag:0.2f}'},
+                {'field': f'Angle', 'value': f'{np.degrees(total_angle):0.2f}'},
+            ]
+            overlay_frame = cv2.add(next_frame, total_mask)
+
+            x_end = int(start_arrow[0] + arrow_len * total_unit[0])
+            y_end = int(start_arrow[1] + arrow_len * total_unit[1])
+
+            cv2.arrowedLine(overlay_frame, start_arrow, (x_end, y_end), text_color, text_thickness)
+            for idx, each_line in enumerate(text_list):
+                text_field = each_line['field']
+                text_val = each_line['value']
+                cv2.putText(
+                    img=overlay_frame, text=f'{text_field}: {text_val}', org=(text_x0, text_y0 + text_dy * (idx + 1)),
+                    fontFace=text_font, fontScale=text_scale, color=text_color, thickness=text_thickness
+                )
+            prev_gray = next_gray.copy()
+            prev_features = good_features_new.reshape(-1, 1, 2)
+
+            top_layer = np.concatenate((next_frame, overlay_frame), axis=1)
+            bottom_layer = np.concatenate((next_mask, total_mask), axis=1)
+            frame_stack = np.concatenate((top_layer, bottom_layer), axis=0)
+
             self.raw_history.append(next_frame)
+            self.processed_history.append(overlay_frame)
+            self.feature_history.append(good_features_new)
+            self.vector_history.append(delta_list)
 
-            # gray_frame = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
-            # gray_frame = cv2.GaussianBlur(gray_frame, ksize=gauss_kernel_size, sigmaX=0, sigmaY=0)
-            # 
-            # fg_mask_mog2 = bg_subtractor_mog2.apply(gray_frame)
-            # fg_mask_mog2 = cv2.morphologyEx(fg_mask_mog2, cv2.MORPH_CLOSE, morph_kernel)
-            # fg_mask_mog2 = cv2.morphologyEx(fg_mask_mog2, cv2.MORPH_OPEN, morph_kernel)
-            # 
-            # # masked frame
-            # res = cv2.bitwise_and(next_frame, next_frame, mask=fg_mask_mog2)
-            # 
-            # fg_frame_mog2 = cv2.cvtColor(fg_mask_mog2, cv2.COLOR_GRAY2RGB)
-            # gray_frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2RGB)
-            # top_layer = np.concatenate((delayed_frame, next_frame), axis=1)
-            # bottom_layer = np.concatenate((gray_frame, fg_frame_mog2), axis=1)
-            # frame_stack = np.concatenate((top_layer, bottom_layer), axis=0)
-
-            cv2.imshow(self.window_name, next_frame)
+            cv2.imshow(self.window_name, frame_stack)
             cv2.waitKey(1)
-
-            delayed_frame = self.raw_history[-1 * num_delay]
         cv2.destroyWindow(self.window_name)
         return
 
