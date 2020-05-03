@@ -182,8 +182,10 @@ class TelloDrone:
         for thread_name, thread_entry in self.__thread_dict.items():
             thread_entry['running'] = False
             each_thread = thread_entry['thread']
-            each_thread.join()
+            if each_thread.ident:
+                each_thread.join()
 
+        delta_video_time = max(self.video_end_time - self.video_start_time, 1)
         meta_data = {
             'id': self.id,
             'num_messages': len(self.send_history),
@@ -191,7 +193,7 @@ class TelloDrone:
             'num_frames': len(self.frame_history),
             'video_start_time': self.video_start_time,
             'video_end_time': self.video_start_time,
-            'video_fps': len(self.frame_history) / (self.video_end_time - self.video_start_time)
+            'video_fps': len(self.frame_history) / delta_video_time
         }
         with open(self.metadata_fname, 'w+') as save_file:
             json.dump(fp=save_file, obj=meta_data, indent=2)

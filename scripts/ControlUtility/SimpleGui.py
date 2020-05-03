@@ -25,14 +25,15 @@ class ControlGui:
         self.title = title
         self.window = None
         self.layout = None
-        self.run_mode = None
+        self.gui_running = None
         self.speed = 20
 
         self.drone = drone
         self.gesture_control = GestureControl(display_feed=False)
         self.gesture_control.start_process_thread()
-        self.speech_text = Speech2Text()
-        self.speech_text.start_listener()
+        self.speech_recognizer = Speech2Text()
+        self.speech_recognizer.start_listener()
+        self.__mic_message_idx = 0
 
         self.color_connected = ('white', 'black')
         self.color_disconnected = ('black', 'white')
@@ -50,6 +51,59 @@ class ControlGui:
 
         self.build_layout()
         self.create_window()
+
+        self.button_function_dict = {
+            'button_left_up': self.action_left_up,
+            'button_left_down': self.action_left_down,
+            'button_left_right': self.action_left_right,
+            'button_left_left': self.action_left_left,
+
+            'button_right_up': self.action_right_up,
+            'button_right_down': self.action_right_down,
+            'button_right_right': self.action_right_right,
+            'button_right_left': self.action_right_left,
+
+            'button_drone': self.action_drone,  # acts as the panic button
+            'button_takeoff': self.action_takeoff,
+            'button_land': self.action_land,
+            'button_speech_toggle': self.action_speech_toggle
+        }
+
+        self.key_func_dict = {
+            'w': self.action_left_up,
+            's': self.action_left_down,
+            'd': self.action_left_right,
+            'a': self.action_left_left,
+
+            'Up:38': self.action_right_up,
+            'Down:40': self.action_right_down,
+            'Right:39': self.action_right_right,
+            'Left:37': self.action_right_left,
+
+            'p': self.action_drone,  # acts as the panic button
+            't': self.action_takeoff,
+            'l': self.action_land,
+            'r': self.action_speech_toggle
+        }
+
+        self.speech_func_dict = {
+            'exit': self.action_exit,
+            'take off': self.action_takeoff,
+            'land': self.action_land,
+            'panic': self.action_drone,
+            'crash': self.action_drone,
+            'stop': self.action_drone,
+
+            'up': self.action_right_up,
+            'down': self.action_right_down,
+            'right': self.action_right_right,
+            'left': self.action_right_left,
+
+            'forward': self.action_left_up,
+            'back': self.action_left_up,
+            'clockwise': self.action_left_right,
+            'counter clockwise': self.action_left_left,
+        }
         return
 
     def build_layout(self):
@@ -115,7 +169,12 @@ class ControlGui:
         ]
 
         log_layer = [
-            sg.Multiline(size=(152, 10), disabled=True, autoscroll=True, key='multiline_log')
+            sg.Column(
+                [[sg.Text('Log:', size=(10, 1))],
+                 [sg.Multiline(size=(100, 10), disabled=True, autoscroll=True, key='multiline_log')]]),
+            sg.Column(
+                [[sg.Text('Speech:', size=(10, 1))],
+                 [sg.Multiline(size=(50, 10), disabled=True, autoscroll=True, key='multiline_speech')]]),
         ]
 
         self.layout = [
@@ -148,90 +207,69 @@ class ControlGui:
         return
 
     def run_gui(self):
-        button_function_dict = {
-            'button_left_up': self.action_left_up,
-            'button_left_down': self.action_left_down,
-            'button_left_right': self.action_left_right,
-            'button_left_left': self.action_left_left,
-
-            'button_right_up': self.action_right_up,
-            'button_right_down': self.action_right_down,
-            'button_right_right': self.action_right_right,
-            'button_right_left': self.action_right_left,
-
-            'button_drone': self.action_drone,  # acts as the panic button
-            'button_takeoff': self.action_takeoff,
-            'button_land': self.action_land,
-            'button_speech_toggle': self.action_speech_toggle
-        }
-
-        key_func_dict = {
-            'w': self.action_left_up,
-            's': self.action_left_down,
-            'd': self.action_left_right,
-            'a': self.action_left_left,
-
-            'Right:39': self.action_right_up,
-            'Left:37': self.action_right_down,
-            'Down:40': self.action_right_right,
-            'Up:38': self.action_right_left,
-
-            'p': self.action_drone,  # acts as the panic button
-            't': self.action_takeoff,
-            'l': self.action_land,
-            'r': self.action_speech_toggle
-        }
         # Event Loop to process "events" and get the "values" of the inputs
-        self.run_mode = 'Manual'
-        while self.run_mode:
+        self.gui_running = True
+        while self.gui_running:
             event, values = self.window.read(timeout=10)
             if event in [None, 'button_exit']:  # if user closes window or clicks cancel
-                self.run_mode = None
-            elif event in button_function_dict.keys():
-                button_func = button_function_dict[event]
+                self.action_exit(event=event, values=values)
+            elif event in self.button_function_dict.keys():
+                button_func = self.button_function_dict[event]
                 button_func(event=event, values=values)
-            elif event in key_func_dict.keys():
-                key_func = key_func_dict[event]
+            elif event in self.key_func_dict.keys():
+                key_func = self.key_func_dict[event]
                 key_func(event=event, values=values)
             elif event == '__TIMEOUT__':
-                self.action_timeout(event=event, values=values)
+                if self.drone.sdk_mode:
+                    battery_level = self.drone.get_battery()
+                    text_battery = self.window['text_battery']
+                    text_battery.update(battery_level)
+
+                last_frame = self.gesture_control.get_last_frame_processed()
+                if last_frame is not None:
+                    # todo very unstable, do not react based on computed motion vectors
+                    image_elem = self.window[f'image_control']
+                    resized_frame = cv2.resize(last_frame, dsize=(self.video_width, self.video_height))
+                    frame_bytes = cv2.imencode('.png', resized_frame)[1].tobytes()
+                    image_elem.update(data=frame_bytes)
+
+                gesture_vector = self.gesture_control.get_smoothed_vector()
+                if gesture_vector is not None:
+                    text_gesture_vector = self.window['text_gesture_vector']
+                    text_gesture_vector.update(value=f'{gesture_vector}')
+
+                last_state = self.drone.get_last_state()
+                if last_state is not None:
+                    state_elem = self.window['multiline_state']
+                    state_elem.update(value=f'', append=False)
+                    for each_key, each_val in last_state.items():
+                        state_elem.update(value=f'{each_key}: {each_val}\n', append=True)
+
+                next_message = self.speech_recognizer.get_message_idx(message_idx=self.__mic_message_idx)
+                if next_message is not None:
+                    state_elem = self.window['multiline_speech']
+                    state_elem.update(value=f'{next_message}\n', append=True)
+                    self.__mic_message_idx += 1
+                    if next_message in self.speech_func_dict.keys():
+                        speech_func = self.speech_func_dict[next_message]
+                        speech_func(event=event, values=values)
         return
 
     def destroy(self):
-        self.window.close()
+        state_elem = self.window['multiline_log']
+        state_elem.update(value=f'Attempting to close all resources\n', append=True)
+        state_elem.update(value=f'This may take some time...\n', append=True)
         self.drone.cleanup()
-        self.speech_text.stop_listener()
+        self.speech_recognizer.cleanup()
+        self.window.close()
         return
 
-    def action_timeout(self, **kwargs):
-        if 'values' not in kwargs:
-            return
-
-        last_frame = self.gesture_control.get_last_frame_processed()
-        if last_frame is not None:
-            image_elem = self.window[f'image_control']
-            resized_frame = cv2.resize(last_frame, dsize=(self.video_width, self.video_height))
-            frame_bytes = cv2.imencode('.png', resized_frame)[1].tobytes()
-            image_elem.update(data=frame_bytes)
-
-        if self.drone.sdk_mode:
-            battery_level = self.drone.get_battery()
-            text_battery = self.window['text_battery']
-            text_battery.update(battery_level)
-
-        gesture_vector = self.gesture_control.get_smoothed_vector()
-        if gesture_vector is not None:
-            text_gesture_vector = self.window['text_gesture_vector']
-            text_gesture_vector.update(value=f'{gesture_vector}')
-
-        last_state = self.drone.get_last_state()
-        if last_state is not None:
-            state_elem = self.window['multiline_state']
-            state_elem.update(value=f'', append=False)
-            for each_key, each_val in last_state.items():
-                state_elem.update(value=f'{each_key}: {each_val}\n', append=True)
+    # noinspection PyUnusedLocal
+    def action_exit(self, **kwargs):
+        self.gui_running = False
         return
 
+    # noinspection PyUnusedLocal
     def action_left_up(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move forward\n', append=True)
@@ -240,6 +278,7 @@ class ControlGui:
         log_elem.Update(value=f'Move forward: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_left_down(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move back\n', append=True)
@@ -248,6 +287,7 @@ class ControlGui:
         log_elem.Update(value=f'Move back: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_left_right(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to rotate clockwise\n', append=True)
@@ -256,6 +296,7 @@ class ControlGui:
         log_elem.Update(value=f'Rotate clockwise: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_left_left(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to rotate counter clockwise\n', append=True)
@@ -264,6 +305,7 @@ class ControlGui:
         log_elem.Ipdate(value=f'Rotate counter clockwise: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_right_up(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move up\n', append=True)
@@ -272,6 +314,7 @@ class ControlGui:
         log_elem.Update(value=f'Move up: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_right_down(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move down\n', append=True)
@@ -280,6 +323,7 @@ class ControlGui:
         log_elem.Update(value=f'Move down: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_right_right(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move left\n', append=True)
@@ -288,6 +332,7 @@ class ControlGui:
         log_elem.Update(value=f'Move right: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_right_left(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to move right\n', append=True)
@@ -296,6 +341,7 @@ class ControlGui:
         log_elem.Update(value=f'Move left: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_drone(self, **kwargs):
         button_drone = self.window['button_drone']
         drone_function = button_drone.metadata['function']
@@ -342,6 +388,7 @@ class ControlGui:
             log_elem.Update(value=f'Panic: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_takeoff(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to takeoff\n', append=True)
@@ -349,6 +396,7 @@ class ControlGui:
         log_elem.Update(value=f'Takeoff: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_land(self, **kwargs):
         log_elem = self.window['multiline_log']
         log_elem.Update(value=f'Attempting to land\n', append=True)

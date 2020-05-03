@@ -3,26 +3,37 @@
 @description
 """
 import argparse
-import sys
+import json
+import os
 import threading
 import time
+from datetime import datetime
 from time import sleep
 
 import speech_recognition as sr
 
-from Andrutil.ObserverObservable import Observable
+from AutoDrone import DATA_DIR
 
 
-class Speech2Text(Observable):
+class Speech2Text:
 
     def __init__(self, input_delay: float = 0.1):
         """
         get input from mic
         translate signal to words
-        update observers
         """
-        Observable.__init__(self)
-        self.subscriber_list = []
+        current_time = time.time()
+        date_time = datetime.fromtimestamp(time.time())
+        time_str = date_time.strftime("%Y-%m-%d-%H-%M-%S")
+
+        # identification information
+        self.name = 'google_sr'
+        self.id = f'{self.name}_{time_str}_{int(current_time)}'
+        self.event_log = []
+        self.save_directory = os.path.join(DATA_DIR, 'speech', f'{self.id}')
+        self.save_fname = os.path.join(self.save_directory, 'message_history.json')
+        if not os.path.isdir(self.save_directory):
+            os.makedirs(self.save_directory)
 
         self.input_delay = input_delay
         self.mic_history = []
@@ -30,6 +41,25 @@ class Speech2Text(Observable):
         self.listen_mic_thread = None
         self.recognizer = None
         return
+
+    def cleanup(self):
+        self.stop_listener()
+        self.save_history()
+        return
+
+    def get_message_idx(self, message_idx: int):
+        """
+        todo make into iterator using queue
+
+        :param message_idx:
+        :return:
+        """
+        message = self.mic_history[message_idx] if len(self.mic_history) > message_idx else None
+        return message
+
+    def get_last_message(self):
+        last_translate = self.mic_history[-1] if len(self.mic_history) > 0 else None
+        return last_translate
 
     def start_listener(self):
         """
@@ -54,12 +84,9 @@ class Speech2Text(Observable):
                 try:
                     audio_text = self.recognizer.recognize_google(audio)
                     self.mic_history.append(audio_text)
-                    self.set_changed_message({'timestamp': time.time(), 'type': 'decode', 'value': audio_text})
                     sleep(self.input_delay)
                 except sr.UnknownValueError as uve:
-                    self.set_changed_message({'timestamp': time.time(), 'type': 'error', 'value': f'{uve}'})
-                except Exception as e:
-                    self.set_changed_message({'timestamp': time.time(), 'type': 'error', 'value': f'{e}'})
+                    self.mic_history.append(f'Input unrecognized: {uve}')
         return
 
     def stop_listener(self):
@@ -68,10 +95,11 @@ class Speech2Text(Observable):
 
     def save_history(self):
         """
-        todo
 
         :return:
         """
+        with open(self.save_fname, 'w+') as save_file:
+            json.dump(fp=save_file, obj=self.mic_history, indent=2)
         return
 
 
