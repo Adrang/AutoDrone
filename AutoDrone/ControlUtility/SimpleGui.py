@@ -4,28 +4,24 @@
 """
 import argparse
 import os
-import threading
 
 # noinspection PyPep8Naming
 import PySimpleGUI as sg
 import cv2
-from Andrutil.ObserverObservable import Observer
 
 from AutoDrone import IMAGE_RESOURCES_DIR
 from AutoDrone.AiControl.AutoControl import AutoControl
-from AutoDrone.AiControl.GetstureControl import GestureControl
+from AutoDrone.AiControl.GestureControl import GestureControl
 from AutoDrone.AudioTranslate.Speech2Text import Speech2Text
 from AutoDrone.Drone.TelloDrone import TelloDrone
 
 
-class ControlGui(Observer):
+class ControlGui:
     FULL_THEME_LIST = sg.theme_list()
     DEFAULT_PIXELS_TO_CHARS_SCALING = (10, 26)
 
-    def __init__(self, title: str, drone: TelloDrone,
-                 auto_control: AutoControl, gesture_control: GestureControl, speech_translator: Speech2Text):
-        Observer.__init__(self, observable_list=[drone, auto_control, gesture_control, speech_translator])
-        auto_control.subscribe(self)
+    def __init__(self, title: str, drone: TelloDrone):
+        sg.theme('DarkAmber')
 
         self.title = title
         self.window = None
@@ -34,9 +30,9 @@ class ControlGui(Observer):
         self.speed = 20
 
         self.drone = drone
-        self.auto_control = auto_control
-        self.gesture_control = gesture_control
-        self.speech_text = speech_translator
+        self.auto_control = AutoControl(observable_list=[self.drone])
+        self.gesture_control = GestureControl(observable_list=[self.drone])
+        self.speech_text = Speech2Text()
         self.speech_text.start_listener()
 
         self.color_connected = ('white', 'black')
@@ -88,7 +84,7 @@ class ControlGui(Observer):
                 [[sg.Text('Battery:', size=(10, 1), pad=title_pad)],
                  [sg.Text('N/A', pad=title_pad, size=(20, 1), key='text_battery')]]),
             sg.Column(
-                [[sg.Text('Wi-fi:', size=(10, 1), pad=title_pad)],
+                [[sg.Text('Wi-Fi:', size=(10, 1), pad=title_pad)],
                  [sg.Text('N/A', pad=title_pad, size=(20, 1), key='text_wifi')]]),
             sg.Button('Update', size=(20, 1), pad=title_pad, disabled=True, key='button_update_title'),
             sg.Button('Exit', size=(20, 1), pad=title_pad, key='button_exit', metadata={'connected': False}),
@@ -165,7 +161,7 @@ class ControlGui(Observer):
         return
 
     def update_battery_wifi(self):
-        battery = self.drone.get_battery()
+        battery = self.drone.get_battery()  # todo get from state history
         wifi_snr = self.drone.get_wifi()
 
         text_battery = self.window['text_battery']
@@ -289,66 +285,66 @@ class ControlGui(Observer):
 
     def action_left_up(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move forward\n', append=True)
+        log_elem.Update(value=f'Attempting to move forward\n', append=True)
         move_args = (0, self.speed, 0, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move forward: {response}\n', append=True)
+        log_elem.Update(value=f'Move forward: {response}\n', append=True)
         return
 
     def action_left_down(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move back\n', append=True)
+        log_elem.Update(value=f'Attempting to move back\n', append=True)
         move_args = (0, -1 * self.speed, 0, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move back: {response}\n', append=True)
+        log_elem.Update(value=f'Move back: {response}\n', append=True)
         return
 
     def action_left_right(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to rotate clockwise\n', append=True)
+        log_elem.Update(value=f'Attempting to rotate clockwise\n', append=True)
         move_args = (0, 0, 0, -1 * self.speed)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Rotate clockwise: {response}\n', append=True)
+        log_elem.Update(value=f'Rotate clockwise: {response}\n', append=True)
         return
 
     def action_left_left(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to rotate counter clockwise\n', append=True)
+        log_elem.Update(value=f'Attempting to rotate counter clockwise\n', append=True)
         move_args = (0, 0, 0, self.speed)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Rotate counter clockwise: {response}\n', append=True)
+        log_elem.Ipdate(value=f'Rotate counter clockwise: {response}\n', append=True)
         return
 
     def action_right_up(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move up\n', append=True)
+        log_elem.Update(value=f'Attempting to move up\n', append=True)
         move_args = (0, 0, self.speed, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move up: {response}\n', append=True)
+        log_elem.Update(value=f'Move up: {response}\n', append=True)
         return
 
     def action_right_down(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move down\n', append=True)
+        log_elem.Update(value=f'Attempting to move down\n', append=True)
         move_args = (0, 0, -1 * self.speed, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move down: {response}\n', append=True)
+        log_elem.Update(value=f'Move down: {response}\n', append=True)
         return
 
     def action_right_right(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move left\n', append=True)
+        log_elem.Update(value=f'Attempting to move left\n', append=True)
         move_args = (self.speed, 0, 0, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move right: {response}\n', append=True)
+        log_elem.Update(value=f'Move right: {response}\n', append=True)
         return
 
     def action_right_left(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to move right\n', append=True)
+        log_elem.Update(value=f'Attempting to move right\n', append=True)
         move_args = (-1 * self.speed, 0, 0, 0)
         response = self.drone.set_rc(*move_args)
-        log_elem.update(value=f'Move left: {response}\n', append=True)
+        log_elem.Update(value=f'Move left: {response}\n', append=True)
         return
 
     def action_drone(self, **kwargs):
@@ -356,12 +352,13 @@ class ControlGui(Observer):
         drone_function = button_drone.metadata['function']
         if drone_function == 'connect':
             log_elem = self.window['multiline_log']
-            log_elem.update(value=f'Attempting to connect to drone\n', append=True)
-            log_elem.update(value=f'This may take some time...\n', append=True)
+            log_elem.Update(value=f'Attempting to connect to drone\n', append=True)
+            log_elem.Update(value=f'This may take some time...\n', append=True)
             button_drone.update(disabled=True)
+            self.window.Refresh()
             response = self.drone.connect()
             button_drone.update(disabled=False)
-            log_elem.update(value=f'Connected: {response}\n', append=True)
+            log_elem.Update(value=f'Connected: {response}\n', append=True)
 
             button_drone.update('Panic')
             button_drone.metadata['function'] = 'Panic'
@@ -383,31 +380,31 @@ class ControlGui(Observer):
             self.update_battery_wifi()
         elif drone_function == 'panic':
             log_elem = self.window['multiline_log']
-            log_elem.update(value=f'PANICKING!\n', append=True)
+            log_elem.Update(value=f'PANICKING!\n', append=True)
             button_drone.update(disabled=True)
             response = self.drone.control_emergency()
             button_drone.update(disabled=False)
-            log_elem.update(value=f'Panic: {response}\n', append=True)
+            log_elem.Update(value=f'Panic: {response}\n', append=True)
         return
 
     def action_update_title(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Updating battery and wifi levels\n', append=True)
+        log_elem.Update(value=f'Updating battery and wifi levels\n', append=True)
         self.update_battery_wifi()
         return
 
     def action_takeoff(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to takeoff\n', append=True)
+        log_elem.Update(value=f'Attempting to takeoff\n', append=True)
         response = self.drone.control_takeoff()
-        log_elem.update(value=f'Takeoff: {response}\n', append=True)
+        log_elem.Update(value=f'Takeoff: {response}\n', append=True)
         return
 
     def action_land(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Attempting to land\n', append=True)
+        log_elem.Update(value=f'Attempting to land\n', append=True)
         response = self.drone.control_land()
-        log_elem.update(value=f'Land: {response}\n', append=True)
+        log_elem.Update(value=f'Land: {response}\n', append=True)
         return
 
     def action_speech_toggle(self, **kwargs):
@@ -418,7 +415,7 @@ class ControlGui(Observer):
         :return:
         """
         log_elem = self.window['multiline_log']
-        log_elem.update(value=f'Speech recognition is \n', append=True)
+        log_elem.Update(value=f'Speech recognition is \n', append=True)
         return
 
 
@@ -431,12 +428,7 @@ def main(main_args):
     tello_drone.NETWORK_SCAN_DELAY = scan_delay
     tello_drone.SEND_DELAY = send_delay
     #############################
-    auto_control = AutoControl(sub_list=[tello_drone])
-    gesture_control = GestureControl(sub_list=[tello_drone])
-    speech_text = Speech2Text()
-    #############################
-    simple_gui = ControlGui(title=title, drone=tello_drone,
-                            auto_control=auto_control, gesture_control=gesture_control, speech_translator=speech_text)
+    simple_gui = ControlGui(title=title, drone=tello_drone)
     simple_gui.run_gui()
     simple_gui.destroy()
     return

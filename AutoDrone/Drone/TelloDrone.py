@@ -10,8 +10,10 @@ https://dl-cdn.ryzerobotics.com/downloads/Tello/20180404/Tello_User_Manual_V1.2_
 """
 import argparse
 import json
+import math
 import os
 import socket
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -24,7 +26,6 @@ from Andrutil.ObserverObservable import Observable
 
 from AutoDrone import DATA_DIR, TERMINAL_COLUMNS
 from AutoDrone.NetworkConnect import netsh_find_ssid_list, netsh_connect_network, netsh_toggle_adapter
-from AutoDrone.PrintObserver import PrintObserver
 
 
 class MoveDirection(Enum):
@@ -77,7 +78,8 @@ class TelloDrone(Observable):
     NUM_BASELINE_VALS = 10
 
     # video stream constants
-    VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
+    VIDEO_UDP_URL = f'udp://0.0.0.0:11111'
+    # VIDEO_UDP_URL = 'udp://0.0.0.0:11111'
     FRAME_DELAY = 1
 
     def __init__(self, adapter_name: str, receive_timeout: float = 4.0):
@@ -101,6 +103,7 @@ class TelloDrone(Observable):
                 Returns 'error' or an informational result code if the command failed
             Read
                 Returns the current value of the sub-parameter
+        todo remove observable patterns
         """
         Observable.__init__(self)
         current_time = time.time()
@@ -198,6 +201,11 @@ class TelloDrone(Observable):
     def __connect_wifi(self):
         """
         Assumes only one drone network - if multiple, uses first one listed
+        This is a mess, but it works.
+        todo Break into two parts
+                discover ssid
+                connect to wifi
+
 
         :return:
         """
@@ -205,7 +213,6 @@ class TelloDrone(Observable):
                                   'value': f'Attempting to discover drone SSID: {self.name}'})
         while not self.drone_ssid:
             netsh_toggle_adapter(adapter_name=self.adapter_name)
-
             ssid_list = netsh_find_ssid_list(mode='bssid')
             for each_ssid in ssid_list:
                 if each_ssid.startswith(self.BASE_SSID):
@@ -233,35 +240,39 @@ class TelloDrone(Observable):
 
         :return:
         """
-        sdk_enabled = False
-        while not sdk_enabled:
-            self.set_changed_message({'timestamp': time.time(), 'type': 'status',
-                                      'value': f'Initializing SDK mode of drone: {self.name}'})
-            message_response = self.__send_command('command')
-            if message_response == 'ok':
-                sdk_enabled = True
-            sleep(self.SEND_DELAY)
         self.set_changed_message({'timestamp': time.time(), 'type': 'status',
-                                  'value': f'SDK mode enabled: {self.name}'})
-        ################################################################
-        self.start_video_thread()
-        self.start_state_thread()
-        return
+                                  'value': f'Initializing SDK mode of drone: {self.name}'})
+        message_response = self.__send_command('command')
+        if message_response == 'ok':
+            self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                      'value': f'SDK mode enabled: {self.name}'})
+            self.start_video_thread()
+            self.start_state_thread()
+        return message_response == 'ok'
 
     def connect(self):
         """
 
         :return:
         """
-        self.__connect_wifi()
-        connected = False
-        while not connected:
-            try:
-                self.__init_sdk_mode()
-                connected = True
-                self.set_changed_message({'timestamp': time.time(), 'type': 'connect', 'value': True})
-            except RuntimeError:
-                pass
+        max_sdk_attempts = 5
+        while not self.sdk_mode:
+            while not self.network_connected:
+                try:
+                    self.__connect_wifi()
+                except subprocess.SubprocessError as se:
+                    self.set_changed_message({'timestamp': time.time(), 'type': 'rte', 'value': f'{se}'})
+                sleep(self.NETWORK_SCAN_DELAY)
+
+            for attempt_count in range(max_sdk_attempts):
+                try:
+                    if self.__init_sdk_mode():
+                        self.sdk_mode = True
+                        self.set_changed_message({'timestamp': time.time(), 'type': 'connect', 'value': True})
+                        break
+                except RuntimeError as rte:
+                    self.set_changed_message({'timestamp': time.time(), 'type': 'rte', 'value': f'{rte}'})
+                sleep(self.SEND_DELAY)
         return
 
     def cleanup(self):
@@ -298,14 +309,14 @@ class TelloDrone(Observable):
 
         :return:
         """
-        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
-                                  'value': f'Starting state thread from drone: {self.name}'})
+        # self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+        #                           'value': f'Starting state thread from drone: {self.name}'})
         video_thread = threading.Thread(target=self.listen_state, args=(), daemon=True)
         video_thread.start()
         while not self.state_stream_running:
             sleep(0.1)
-        self.set_changed_message({'timestamp': time.time(), 'type': 'status',
-                                  'value': f'State stream established: {self.name}'})
+        # self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+        #                           'value': f'State stream established: {self.name}'})
         return
 
     def listen_state(self):
@@ -348,6 +359,7 @@ class TelloDrone(Observable):
                 state_dict['timestamp'] = initial_time
                 with self.state_lock:
                     self.state_history.append(state_dict)
+                # todo add messages to queue
                 self.set_changed_message({'timestamp': time.time(), 'type': 'state', 'value': state_dict})
             except Exception as e:
                 self.set_changed_message({'timestamp': time.time(), 'type': 'status',
@@ -409,21 +421,27 @@ class TelloDrone(Observable):
 
         :return:
         """
+        self.control_streamoff()
         self.control_streamon()
 
         self.video_capture = cv2.VideoCapture(self.VIDEO_UDP_URL, cv2.CAP_FFMPEG)
         if not self.video_capture.isOpened():
-            return 'Could not open video stream'
+            self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                      'value': f'Could not open video stream'})
+            return
 
         # discard first read and make sure all is reading correctly
         read_success, video_frame = self.video_capture.read()
         if not read_success:
-            return 'Error reading from video stream'
+            self.set_changed_message({'timestamp': time.time(), 'type': 'status',
+                                      'value': f'Error reading from video stream'})
+            return
 
         # save capture width and height for later when saving the video
         fps = 30
         frame_width = int(self.video_capture.get(3))
         frame_height = int(self.video_capture.get(4))
+
         codec_str = 'MJPG'
         self.video_writer = cv2.VideoWriter(
             self.video_fname, cv2.VideoWriter_fourcc(*codec_str),
@@ -433,11 +451,11 @@ class TelloDrone(Observable):
         while self.video_capture.isOpened():
             read_success, video_frame = self.video_capture.read()
             if read_success:
-                with self.video_lock:
-                    self.frame_history.append(video_frame)
-                    self.set_changed_message({'timestamp': time.time(), 'type': 'video', 'value': video_frame})
+                self.set_changed_message({'timestamp': time.time(), 'type': 'video', 'value': video_frame})
+                self.frame_history.append(video_frame)
                 self.video_writer.write(video_frame.astype('uint8'))
             cv2.waitKey(self.FRAME_DELAY)
+
         self.video_capture.release()
         self.video_writer.release()
         cv2.destroyAllWindows()
@@ -543,6 +561,126 @@ class TelloDrone(Observable):
         message_response = self.__send_command(command_str)
         return message_response
 
+    def control_up(self, distance_cm):
+        """
+        up x
+
+        fly up a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'up {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_down(self, distance_cm):
+        """
+        down x
+
+        fly down a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'down {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_left(self, distance_cm):
+        """
+        left x
+
+        fly left a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'left {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_right(self, distance_cm):
+        """
+        right x
+
+        fly right a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'right {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_forward(self, distance_cm):
+        """
+        forward x
+
+        fly forward a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'forward {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_back(self, distance_cm):
+        """
+        back x
+
+        fly backwards a distance of x centimeters
+        x: 20 - 500
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'back {int(distance_cm)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_cw(self, degrees: float):
+        """
+        cw x
+
+        rotate x degrees clockwise
+        x: 1 - 3600
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'cw {int(degrees)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_ccw(self, degrees: float):
+        """
+        cxw x
+
+        rotate x degrees counter clockwise
+        x: 1 - 3600
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'ccw {int(degrees)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
     def control_flip(self, direction: FlipDirection):
         """
         flip x
@@ -558,6 +696,44 @@ class TelloDrone(Observable):
         :return:
         """
         command_str = f'flip {direction.value}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_go(self, x_end: int, y_end: int, z_end: int, speed_cms: float):
+        """
+        go x y z speed
+
+        fly to position (x,y,z) at speed (cm/s)
+        x: 20-500
+        y: 20-500
+        z: 20-500
+        speed: 10-100
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'go {x_end} {y_end} {z_end} {int(speed_cms)}'
+        message_response = self.__send_command(command_str)
+        return message_response
+
+    def control_curve(self, x_start, y_start, z_start, x_end, y_end, z_end, speed_cms):
+        """
+        curve x1 y1 z1 x2 y2 z2 speed
+
+        fly a curve defined by the starting and ending vector positions at speed (cm/s)
+        x1, x2: 20-500
+        y1, y2: 20-500
+        z1, z2: 20-500
+        Note:
+            The arc radius must be within the range of 0.5-10 meters.
+            x/y/z can’t be between -20 – 20 at the same time.
+
+        ok, error
+
+        :return:
+        """
+        command_str = f'curve {x_start} {y_start} {z_start} {x_end} {y_end} {z_end} {int(speed_cms)}'
         message_response = self.__send_command(command_str)
         return message_response
 
@@ -605,9 +781,20 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'speed?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        vgx = float(last_state['vgx'])
+        vgy = float(last_state['vgy'])
+        vgz = float(last_state['vgz'])
+
+        radicand = (vgx ** 2) + (vgy ** 2) + (vgz ** 2)
+        total = math.sqrt(radicand)
+        value = {
+            'vgx': vgx,
+            'vgy': vgy,
+            'vgz': vgz,
+            'total': total
+        }
+        return value
 
     def get_battery(self):
         """
@@ -619,9 +806,9 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'battery?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        value = float(last_state['bat'])
+        return value
 
     def get_time(self):
         """
@@ -632,9 +819,9 @@ class TelloDrone(Observable):
         time
         :return:
         """
-        command_str = f'time?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        value = float(last_state['time'])
+        return value
 
     def get_wifi(self):
         """
@@ -661,9 +848,9 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'height?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        value = float(last_state['h'])
+        return value
 
     def get_temp(self):
         """
@@ -675,9 +862,15 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'temp?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        temp_low = float(last_state['templ'])
+        temp_high = float(last_state['temph'])
+        value = {
+            'templ': temp_low,
+            'temph': temp_high,
+            'range': temp_high - temp_low
+        }
+        return value
 
     def get_attitude(self):
         """
@@ -689,9 +882,16 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'attitude?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        pitch = float(last_state['pitch'])
+        roll = float(last_state['roll'])
+        yaw = float(last_state['yaw'])
+        value = {
+            'pitch': pitch,
+            'roll': roll,
+            'yaw': yaw
+        }
+        return value
 
     def get_baro(self):
         """
@@ -703,9 +903,9 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'baro?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        value = float(last_state['baro'])
+        return value
 
     def get_acceleration(self):
         """
@@ -717,9 +917,20 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'acceleration?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        agx = float(last_state['agx'])
+        agy = float(last_state['agy'])
+        agz = float(last_state['agz'])
+
+        radicand = (agx ** 2) + (agy ** 2) + (agz ** 2)
+        total = math.sqrt(radicand)
+        value = {
+            'agx': agx,
+            'agy': agy,
+            'agz': agz,
+            'total': total
+        }
+        return value
 
     def get_tof(self):
         """
@@ -731,9 +942,9 @@ class TelloDrone(Observable):
 
         :return:
         """
-        command_str = f'tof?'
-        message_response = self.__send_command(command_str)
-        return message_response
+        last_state = self.get_last_state()
+        value = float(last_state['tof'])
+        return value
 
 
 def main(main_args):
@@ -742,11 +953,15 @@ def main(main_args):
     :param main_args:
     :return:
     """
+    from AutoDrone.PrintObserver import PrintObserver
+    from AutoDrone.ImageObserver import ImageObserver
+    ###################################
     send_delay = main_args.get('send_delay', 0.1)
     scan_delay = main_args.get('scan_delay', 0.1)
     ###################################
     tello_drone = TelloDrone(adapter_name='Wi-Fi')
-    print_observer = PrintObserver(sub_list=[tello_drone])
+    PrintObserver(observable_list=[tello_drone])
+    ImageObserver(observable_list=[tello_drone])
     ###################################
     tello_drone.NETWORK_SCAN_DELAY = scan_delay
     tello_drone.SEND_DELAY = send_delay

@@ -12,8 +12,8 @@ from AutoDrone.Drone.TelloDrone import TelloDrone
 
 class AutoControl(Observer, Observable):
 
-    def __init__(self, sub_list: list):
-        Observer.__init__(self, sub_list)
+    def __init__(self, observable_list: list):
+        Observer.__init__(self, observable_list=observable_list)
         Observable.__init__(self)
         return
 
@@ -36,7 +36,7 @@ def main(main_args):
     tello_drone.SEND_DELAY = send_delay
     tello_drone.connect()
     ###################################
-    auto_control = AutoControl(sub_list=[tello_drone])
+    auto_control = AutoControl(observable_list=[tello_drone])
     ###################################
     time.sleep(10)
     tello_drone.cleanup()

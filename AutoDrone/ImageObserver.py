@@ -10,15 +10,16 @@ from Andrutil.ObserverObservable import Observer
 
 class ImageObserver(Observer):
 
-    def __init__(self, sub_list: []):
-        Observer.__init__(self, sub_list=sub_list)
-        self.window_name = 'PrintObserver'
-        self.window = cv2.namedWindow(self.window_name)
+    def __init__(self, observable_list: []):
+        Observer.__init__(self, observable_list=observable_list)
+        self.window_name = 'ImageObserver'
+        # self.window = cv2.namedWindow(self.window_name)
         return
 
     def update(self, source, update_message):
         if update_message['type'] in ['frame', 'image', 'video']:
             cv2.imshow(self.window_name, update_message['value'])
+            cv2.waitKey(1)
         return
 
 
