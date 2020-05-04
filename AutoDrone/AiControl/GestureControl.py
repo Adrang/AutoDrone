@@ -6,6 +6,7 @@ import argparse
 import os
 import threading
 import time
+from datetime import datetime
 from queue import Queue
 
 import cv2
@@ -14,40 +15,84 @@ import numpy as np
 from AutoDrone import DATA_DIR
 
 
+def unit_vector(vector):
+    """
+    Returns the unit vector of the vector
+
+    :param vector:
+    :return:
+    """
+    return vector / np.linalg.norm(vector)
+
+
+def angle_between(v1, v2):
+    """
+    Returns the angle in radians between vectors 'v1' and 'v2'
+
+    :param v1:
+    :param v2:
+    :return:
+    """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+
+
 class GestureControl:
 
     def __init__(self, display_feed: bool):
+        """
+        todo save processed video feed
+
+        :param display_feed:
+        """
+        current_time = time.time()
+        date_time = datetime.fromtimestamp(time.time())
+        time_str = date_time.strftime("%Y-%m-%d-%H-%M-%S")
+
+        # identification information
+        self.name = 'gesture_recognition'
+        self.id = f'{self.name}_{time_str}_{int(current_time)}'
+        self.save_directory = os.path.join(DATA_DIR, 'gesture_recognition', f'{self.id}')
+        self.video_fname = os.path.join(self.save_directory, f'{self.id}.avi')
+        if not os.path.isdir(self.save_directory):
+            os.makedirs(self.save_directory)
+
         self.__frame_queue = Queue()
         self.running = False
         self.process_thread = None
         self.window_name = 'Gesture Control'
         self.display_feed = display_feed
+        self.video_writer = None
 
-        self.raw_history = []
-        self.processed_history = []
-        self.feature_history = []
-        self.vector_history = []
-
+        self.history = []
         self.smoothing_factor = 30
+        return
+
+    def cleanup(self):
+        self.running = False
+        self.process_thread.join()
         return
 
     def add_frame(self, new_frame):
         self.__frame_queue.put(new_frame)
         return
 
-    def get_last_frame_raw(self):
-        last_frame = self.raw_history[-1] if len(self.raw_history) > 0 else None
-        return last_frame
-
-    def get_last_frame_processed(self):
-        last_frame = self.processed_history[-1] if len(self.processed_history) > 0 else None
-        return last_frame
+    def get_last_flow(self):
+        last_flow = self.history[-1] if len(self.history) > 0 else None
+        return last_flow
 
     def get_smoothed_vector(self):
-        if len(self.vector_history) == 0:
+        """
+        todo    fix since history is no longer just the vector or image
+                compute smoothed vector based on 'vector' entry in history
+
+        :return:
+        """
+        if len(self.history) == 0:
             return None
-        num_frames = min(self.smoothing_factor, len(self.vector_history))
-        last_frame_list = self.vector_history[-1 * num_frames]
+        num_frames = min(self.smoothing_factor, len(self.history))
+        last_frame_list = self.history[-1 * num_frames]
         smoothed_vector = np.average(last_frame_list, axis=0)
         return smoothed_vector
 
@@ -58,6 +103,8 @@ class GestureControl:
 
     def __process_frame_queue(self):
         """
+        refactor to only compute frame differences
+
         track the optical flow for these corners
         https://docs.opencv.org/3.0-beta/modules/imgproc/doc/feature_detection.html
         https://docs.opencv.org/3.0-beta/modules/video/doc/motion_analysis_and_object_tracking.html
@@ -65,6 +112,8 @@ class GestureControl:
         :return:
         """
         num_initial = 10
+        len_history = 10
+        magnitude_threshold = 3
         frame_resize_factor = 0.25
         draw_color = (0, 255, 0)
         text_color = (0, 0, 255)
@@ -105,21 +154,27 @@ class GestureControl:
         frame_height = int(first_frame.shape[0] * frame_resize_factor)
         frame_dims = (frame_width, frame_height)
 
+        fps = 15
+        codec_str = 'MJPG'
+        self.video_writer = cv2.VideoWriter(
+            self.video_fname, cv2.VideoWriter_fourcc(*codec_str),
+            fps, (frame_width * 2, frame_height * 2)
+        )
+
+        prev_frame = cv2.resize(first_frame, frame_dims, interpolation=cv2.INTER_AREA)
         for frame_idx in range(num_initial):
             frame = self.__frame_queue.get(block=True)
-            next_frame = cv2.resize(frame, frame_dims, interpolation=cv2.INTER_AREA)
-            self.raw_history.append(next_frame)
+            prev_frame = cv2.resize(frame, frame_dims, interpolation=cv2.INTER_AREA)
 
-        prev_frame = self.raw_history[-1]
         prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         prev_features = cv2.goodFeaturesToTrack(prev_gray, mask=None, **shi_tomasi_params)
-        total_mask = np.zeros_like(prev_frame)
         base_angle = [1, 0]
         self.running = True
         while self.running:
             next_frame = self.__frame_queue.get(block=True)
             next_frame = cv2.resize(next_frame, frame_dims, interpolation=cv2.INTER_AREA)
             next_mask = np.zeros_like(prev_frame)
+            total_mask = np.zeros_like(prev_frame)
 
             next_gray = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
             next_features, status, error = cv2.calcOpticalFlowPyrLK(
@@ -136,39 +191,49 @@ class GestureControl:
                 # todo if hit this point, reinitialize system
                 continue
 
+            num_points = min(len(self.history), len_history)
+            if num_points > 0:
+                recent_feature_list = [
+                    each_history['feature']
+                    for each_history in self.history[-1 * num_points:]
+                ]
+                for idx, feature in enumerate(recent_feature_list):
+                    feature_x, feature_y = feature.ravel()
+                    total_mask = cv2.circle(total_mask, (feature_x, feature_y), 3, draw_color, -1)
+
+            overlay_frame = cv2.add(next_frame, total_mask)
             first_feature_old = good_features_old[0, :]
             first_feature_new = good_features_new[0, :]
-
             old_x, old_y = first_feature_old.ravel()
             new_x, new_y = first_feature_new.ravel()
-            delta_list = []
+            feature_vector = (new_x - old_x, -1 * (new_y - old_y))
 
-            total_mask = cv2.line(total_mask, (new_x, new_y), (old_x, old_y), draw_color, 2)
             next_mask = cv2.circle(next_mask, (new_x, new_y), 3, draw_color, -1)
-            for new_point, old_point in zip(good_features_new, good_features_old):
-                new_x, new_y = new_point.ravel()
-                old_x, old_y = old_point.ravel()
+            vector_mag = np.linalg.norm(feature_vector)
+            x_end, y_end = start_arrow
+            vector_unit = feature_vector / np.linalg.norm(feature_vector) if vector_mag != 0 else [0, 0]
+            vector_dot = np.dot(vector_unit, base_angle)
+            vector_angle = np.arcsin(vector_dot)
+            vector_degrees = np.degrees(vector_angle)
+            if vector_mag > magnitude_threshold:
+                x_end = int(start_arrow[0] + arrow_len * vector_unit[0])
+                y_end = int(start_arrow[1] + arrow_len * vector_unit[1])
 
-                delta_x = new_x - old_x
-                delta_y = new_y - old_y
-                delta_list.append((delta_x, delta_y))
-
-            total_delta = np.average(delta_list, axis=0)
-            total_mag = np.linalg.norm(total_delta)
-
-            total_unit = total_delta / np.linalg.norm(total_mag)
-            dot_product = np.dot(base_angle, total_unit)
-            total_angle = np.arccos(dot_product)
+            self.history.append({
+                'raw': next_frame,
+                'processed': overlay_frame,
+                'feature': first_feature_new,
+                'vector': feature_vector,
+                'magnitude': vector_mag,
+                'angle': vector_angle,
+                'exceeds_threshold': vector_mag > magnitude_threshold
+            })
 
             text_list = [
-                {'field': f'Magnitude', 'value': f'{total_mag:0.2f}'},
-                {'field': f'Angle', 'value': f'{np.degrees(total_angle):0.2f}'},
+                {'field': f'Magnitude', 'value': f'{vector_mag:0.2f}'},
+                {'field': f'Angle', 'value': f'{vector_degrees:0.2f}'},
+                {'field': f'Vector', 'value': f'<{feature_vector[0]:0.2f}, {feature_vector[1]:0.2f}>'},
             ]
-            overlay_frame = cv2.add(next_frame, total_mask)
-
-            x_end = int(start_arrow[0] + arrow_len * total_unit[0])
-            y_end = int(start_arrow[1] + arrow_len * total_unit[1])
-
             cv2.arrowedLine(overlay_frame, start_arrow, (x_end, y_end), text_color, text_thickness)
             for idx, each_line in enumerate(text_list):
                 text_field = each_line['field']
@@ -184,14 +249,11 @@ class GestureControl:
             bottom_layer = np.concatenate((next_mask, total_mask), axis=1)
             frame_stack = np.concatenate((top_layer, bottom_layer), axis=0)
 
-            self.raw_history.append(next_frame)
-            self.processed_history.append(overlay_frame)
-            self.feature_history.append(good_features_new)
-            self.vector_history.append(delta_list)
-
             if self.display_feed:
                 cv2.imshow(self.window_name, frame_stack)
-                cv2.waitKey(1)
+                self.video_writer.write(frame_stack.astype('uint8'))
+                cv2.waitKey(10)
+        self.video_writer.release()
         cv2.destroyWindow(self.window_name)
         return
 
@@ -199,7 +261,7 @@ class GestureControl:
 def main(main_args):
     from AutoDrone.VideoIterator import ObservableVideo
     ###################################
-    playback_file = main_args.get('playback_file', os.path.join(DATA_DIR, 'video', 'tello_test_2.avi'))
+    playback_file = main_args.get('playback_file', os.path.join(DATA_DIR, 'video', 'webcam_test_0.mp4'))
     video_length = main_args.get('length', 20)
     ###################################
     gesture_control = GestureControl(display_feed=True)
@@ -208,12 +270,13 @@ def main(main_args):
     ###################################
     observable_video.start_video_thread()
     time.sleep(video_length)
+    gesture_control.cleanup()
     return
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--playback_file', type=str, default=os.path.join(DATA_DIR, 'video', 'tello_test_2.avi'),
+    parser.add_argument('--playback_file', type=str, default=os.path.join(DATA_DIR, 'video', 'webcam_test_0.mp4'),
                         help='')
     parser.add_argument('--length', type=int, default=21,
                         help='')

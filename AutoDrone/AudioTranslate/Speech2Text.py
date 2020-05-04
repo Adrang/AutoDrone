@@ -86,7 +86,11 @@ class Speech2Text:
                     self.mic_history.append(audio_text)
                     sleep(self.input_delay)
                 except sr.UnknownValueError as uve:
-                    self.mic_history.append(f'Input unrecognized: {uve}')
+                    # self.mic_history.append(f'{uve}')
+                    pass
+                except sr.RequestError as re:
+                    # self.mic_history.append(f'{re}')
+                    pass
         return
 
     def stop_listener(self):

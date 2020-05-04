@@ -30,11 +30,12 @@ class FlipDirection(Enum):
 
 
 class TelloDrone:
+    # todo more clearly define the function of NETWORK_SCAN_DELAY and SEND_DELAY
     # Network constants
     BASE_SSID = 'TELLO-'
     NETWORK_SCAN_DELAY = 0.5
 
-    # Send and receive commands socket
+    # Send/receive commands socket
     CLIENT_HOST = '192.168.10.1'
     CLIENT_PORT = 8889
     SEND_DELAY = 0.1

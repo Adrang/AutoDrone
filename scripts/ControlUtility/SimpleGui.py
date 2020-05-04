@@ -26,7 +26,7 @@ class ControlGui:
         self.window = None
         self.layout = None
         self.gui_running = None
-        self.speed = 20
+        self.speed = 40
 
         self.drone = drone
         self.gesture_control = GestureControl(display_feed=False)
@@ -90,6 +90,7 @@ class ControlGui:
             'exit': self.action_exit,
             'take off': self.action_takeoff,
             'land': self.action_land,
+            'connect': self.action_drone,
             'panic': self.action_drone,
             'crash': self.action_drone,
             'stop': self.action_drone,
@@ -215,28 +216,19 @@ class ControlGui:
                 self.action_exit(event=event, values=values)
             elif event in self.button_function_dict.keys():
                 button_func = self.button_function_dict[event]
-                button_func(event=event, values=values)
+                button_func()
             elif event in self.key_func_dict.keys():
                 key_func = self.key_func_dict[event]
-                key_func(event=event, values=values)
+                key_func()
             elif event == '__TIMEOUT__':
                 if self.drone.sdk_mode:
                     battery_level = self.drone.get_battery()
                     text_battery = self.window['text_battery']
                     text_battery.update(battery_level)
 
-                last_frame = self.gesture_control.get_last_frame_processed()
+                last_frame = self.drone.get_last_frame()
                 if last_frame is not None:
-                    # todo very unstable, do not react based on computed motion vectors
-                    image_elem = self.window[f'image_control']
-                    resized_frame = cv2.resize(last_frame, dsize=(self.video_width, self.video_height))
-                    frame_bytes = cv2.imencode('.png', resized_frame)[1].tobytes()
-                    image_elem.update(data=frame_bytes)
-
-                gesture_vector = self.gesture_control.get_smoothed_vector()
-                if gesture_vector is not None:
-                    text_gesture_vector = self.window['text_gesture_vector']
-                    text_gesture_vector.update(value=f'{gesture_vector}')
+                    self.gesture_control.add_frame(last_frame)
 
                 last_state = self.drone.get_last_state()
                 if last_state is not None:
@@ -247,12 +239,27 @@ class ControlGui:
 
                 next_message = self.speech_recognizer.get_message_idx(message_idx=self.__mic_message_idx)
                 if next_message is not None:
+                    # todo add check if speech enabled
+                    # todo address issue of noisy environment
                     state_elem = self.window['multiline_speech']
                     state_elem.update(value=f'{next_message}\n', append=True)
                     self.__mic_message_idx += 1
                     if next_message in self.speech_func_dict.keys():
                         speech_func = self.speech_func_dict[next_message]
-                        speech_func(event=event, values=values)
+                        speech_func()
+
+                # perform this action last to make sure all processing can be done before accessing new
+                # flow information (the processing is done in a separate thread)
+                last_gesture_flow = self.gesture_control.get_last_flow()
+                if last_gesture_flow is not None:
+                    image_elem = self.window[f'image_control']
+                    text_gesture_vector = self.window['text_gesture_vector']
+                    gesture_vector = last_gesture_flow['vector']
+                    text_gesture_vector.update(value=f'{gesture_vector}')
+                    last_frame = last_gesture_flow['processed']
+                    resized_frame = cv2.resize(last_frame, dsize=(self.video_width, self.video_height))
+                    frame_bytes = cv2.imencode('.png', resized_frame)[1].tobytes()
+                    image_elem.update(data=frame_bytes)
         return
 
     def destroy(self):
@@ -302,7 +309,7 @@ class ControlGui:
         log_elem.Update(value=f'Attempting to rotate counter clockwise\n', append=True)
         move_args = (0, 0, 0, self.speed)
         response = self.drone.set_rc(*move_args)
-        log_elem.Ipdate(value=f'Rotate counter clockwise: {response}\n', append=True)
+        log_elem.update(value=f'Rotate counter clockwise: {response}\n', append=True)
         return
 
     # noinspection PyUnusedLocal
@@ -326,7 +333,7 @@ class ControlGui:
     # noinspection PyUnusedLocal
     def action_right_right(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.Update(value=f'Attempting to move left\n', append=True)
+        log_elem.Update(value=f'Attempting to move right\n', append=True)
         move_args = (self.speed, 0, 0, 0)
         response = self.drone.set_rc(*move_args)
         log_elem.Update(value=f'Move right: {response}\n', append=True)
@@ -335,7 +342,7 @@ class ControlGui:
     # noinspection PyUnusedLocal
     def action_right_left(self, **kwargs):
         log_elem = self.window['multiline_log']
-        log_elem.Update(value=f'Attempting to move right\n', append=True)
+        log_elem.Update(value=f'Attempting to move left\n', append=True)
         move_args = (-1 * self.speed, 0, 0, 0)
         response = self.drone.set_rc(*move_args)
         log_elem.Update(value=f'Move left: {response}\n', append=True)
@@ -404,6 +411,7 @@ class ControlGui:
         log_elem.Update(value=f'Land: {response}\n', append=True)
         return
 
+    # noinspection PyUnusedLocal
     def action_speech_toggle(self, **kwargs):
         """
         todo
