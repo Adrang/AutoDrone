@@ -6,6 +6,10 @@ This project was originally undertaken to fulfill the requirements for a graduat
 - [AutoDrone Proposal](docs/reports/AutoDrone_proposal.pdf)
 - [AutoDrone Writeup](docs/reports/AutoDrone_writeup.pdf)
 
+## License
+
+See the [LICENSE file](LICENSE) for license rights and limitations (MIT).
+
 ## Overview
 
 Most small, DIY drones are configured to be controlled completely from either a remote control or from an on-drone auto-pilot. The former are generally limited by the number of control channels on the transmitter, and the pilot must have some method for observing the environment in which the drone is operating. The latter configuration is limited by the power and resources provided by the on-board computer. The most important resources, computational capability and power, are typically heavy and expensive, making resource management and system addons a critical design decision. Can a camera be added to the board without overly taxing the already limited processing power? What about a tracking algorithm? Many approaches for these problems are becoming more and more resource demanding, such as training of neural networks or running reinforcement learning agents, and so a different configuration might be better suited to building an extensible and scalable flight control system.
@@ -118,7 +122,3 @@ TODO Disclaimer about these having been inferred
 - Green - SDK mode
 
 ### Command descriptions
-
-## License
-
-See the [LICENSE file](LICENSE) for license rights and limitations (MIT).

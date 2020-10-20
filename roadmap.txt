@@ -1,9 +1,7 @@
-todo    docstrings
 todo    readme
 todo    eye tracking
 
 todo    arduino micro drone
-
 todo    gesture control
             pose estimation
             hand tracking
@@ -16,3 +14,5 @@ todo    fix issue - compile opencv from sources
                     [h264 @ 00000269a35be080] decode_slice_header error
                     [h264 @ 00000269a35be080] no frame!
                     ...
+todo    rl agent to handle drone send rate - minimize time to react after sending command
+        seems to react better if the drone is stable before sending next command

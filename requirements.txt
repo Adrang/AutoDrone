@@ -12,10 +12,6 @@ pynput
 PyAudio
 Flask
 bokeh
-pandas
 tornado
-xlrd
-openpyxl
 CoDrone
-
 dlib
