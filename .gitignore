@@ -1,0 +1,11 @@
+.idea/
+/venv/
+
+/data/
+/logs/
+
+**/__pycache__/
+
+AutoDrone.egg_info/
+
+/scripts/sandbox.py

@@ -1,0 +1,18 @@
+todo    docstrings
+todo    readme
+todo    eye tracking
+
+todo    arduino micro drone
+
+todo    gesture control
+            pose estimation
+            hand tracking
+            monocular depth estimation
+            constant depth estimation
+
+todo    fix issue - compile opencv from sources
+                    ...
+                    [h264 @ 00000269a35be080] non-existing PPS 0 referenced
+                    [h264 @ 00000269a35be080] decode_slice_header error
+                    [h264 @ 00000269a35be080] no frame!
+                    ...
